@@ -90,6 +90,10 @@ pub fn shiftCursor(buffer: *Buffer, direction: Editor.Direction) void {
     }
 }
 
+pub fn goToLine(buffer: *Buffer, line: usize) void {
+    buffer.real_cursor.line = @min(@max(line, 1), buffer.lines.items.len);
+}
+
 pub fn render(buffer: Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Position {
     // TODO: Adjust scroll
 

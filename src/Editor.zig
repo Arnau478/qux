@@ -159,7 +159,20 @@ fn drawBar(editor: Editor, tty_size: Tty.Size) !void {
 }
 
 fn runCommand(editor: *Editor, command: []const u8) void {
-    if (std.mem.eql(u8, "q", command)) {
+    var iter = std.mem.splitScalar(u8, command, ' ');
+    var name = iter.next() orelse return;
+    while (name.len == 0) {
+        name = iter.next() orelse return;
+    }
+
+    if (std.mem.eql(u8, name, "q")) {
+        if (iter.peek() != null) return; // TODO
         editor.quitCurrentBuffer();
+    } else {
+        if (iter.peek() == null and std.mem.indexOfNone(u8, name, "0123456789") == null) {
+            editor.currentBuffer().goToLine(std.fmt.parseInt(usize, name, 10) catch return);
+        } else {
+            // TODO
+        }
     }
 }
