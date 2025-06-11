@@ -45,23 +45,46 @@ tty: *Tty,
 mode: Mode,
 buffers: std.ArrayListUnmanaged(Buffer),
 current_buffer_idx: usize,
+notice: ?[]const u8,
+notice_is_error: bool,
 
-pub fn init(allocator: std.mem.Allocator, tty: *Tty) !Editor {
+pub fn init(allocator: std.mem.Allocator, tty: *Tty, initial_buffer_destinations: []const []const u8) !Editor {
     var editor: Editor = .{
         .allocator = allocator,
         .tty = tty,
         .mode = .normal,
         .buffers = .{},
         .current_buffer_idx = 0,
+        .notice = null,
+        .notice_is_error = false,
     };
 
-    try editor.buffers.append(allocator, try .init(allocator));
+    if (initial_buffer_destinations.len == 0) {
+        try editor.buffers.append(allocator, try .init(allocator, null));
+    } else {
+        for (initial_buffer_destinations) |dest| {
+            try editor.buffers.append(allocator, try .init(allocator, dest));
+        }
+    }
 
     return editor;
 }
 
 pub fn deinit(editor: *Editor) void {
+    editor.unsetNotice();
     editor.buffers.deinit(editor.allocator);
+}
+
+fn unsetNotice(editor: *Editor) void {
+    if (editor.notice) |old| editor.allocator.free(old);
+    editor.notice = null;
+    editor.notice_is_error = false;
+}
+
+fn setNotice(editor: *Editor, is_error: bool, comptime fmt: []const u8, args: anytype) !void {
+    editor.unsetNotice();
+    editor.notice_is_error = is_error;
+    editor.notice = try std.fmt.allocPrint(editor.allocator, fmt, args);
 }
 
 fn currentBuffer(editor: Editor) *Buffer {
@@ -109,7 +132,7 @@ pub fn run(editor: *Editor) !void {
                     ':' => editor.mode = .{ .command = .{} },
                     else => {},
                 },
-                .escape => {},
+                .escape => editor.unsetNotice(),
                 .arrow => |arrow| switch (arrow) {
                     inline else => |a| editor.currentBuffer().shiftCursor(@field(Direction, @tagName(a))),
                 },
@@ -128,7 +151,7 @@ pub fn run(editor: *Editor) !void {
             .command => |*command| switch (input) {
                 .printable => |printable| try command.append(editor.allocator, printable),
                 .escape, .@"return" => {
-                    if (input == .@"return") runCommand(editor, command.items);
+                    if (input == .@"return") try runCommand(editor, command.items);
 
                     command.deinit(editor.allocator);
                     editor.mode = .normal;
@@ -152,13 +175,19 @@ fn drawBar(editor: Editor, tty_size: Tty.Size) !void {
     try editor.tty.resetAttributes();
     try editor.tty.writer().print(" ({}, {})", .{ editor.currentBuffer().visualCursor().line, editor.currentBuffer().visualCursor().column });
 
+    try editor.tty.moveCursor(.{ .x = 0, .y = tty_size.height - 1 });
     if (editor.mode == .command) {
-        try editor.tty.moveCursor(.{ .x = 0, .y = tty_size.height - 1 });
         try editor.tty.writer().print(":{s}", .{editor.mode.command.items});
+    } else {
+        if (editor.notice) |notice| {
+            try editor.tty.setAttributes(.{ .fg = if (editor.notice_is_error) .red else null });
+            try editor.tty.writer().writeAll(notice);
+            try editor.tty.resetAttributes();
+        }
     }
 }
 
-fn runCommand(editor: *Editor, command: []const u8) void {
+fn runCommand(editor: *Editor, command: []const u8) !void {
     var iter = std.mem.splitScalar(u8, command, ' ');
     var name = iter.next() orelse return;
     while (name.len == 0) {
@@ -168,11 +197,25 @@ fn runCommand(editor: *Editor, command: []const u8) void {
     if (std.mem.eql(u8, name, "q")) {
         if (iter.peek() != null) return; // TODO
         editor.quitCurrentBuffer();
+    } else if (std.mem.eql(u8, name, "w")) {
+        if (iter.peek() != null) return; // TODO
+        const is_new = editor.currentBuffer().save() catch |err| blk: {
+            switch (err) {
+                error.NoDestination => try editor.setNotice(true, "No destination assigned to buffer", .{}),
+                error.FileOpenError => try editor.setNotice(true, "Error opening file \"{s}\"", .{editor.currentBuffer().destination.?}),
+                error.FileWriteError => try editor.setNotice(true, "Error writing file \"{s}\"", .{editor.currentBuffer().destination.?}),
+            }
+
+            break :blk false;
+        };
+
+        if (is_new) try editor.setNotice(false, "Created file \"{s}\"", .{editor.currentBuffer().destination.?});
     } else {
-        if (iter.peek() == null and std.mem.indexOfNone(u8, name, "0123456789") == null) {
+        if (std.mem.indexOfNone(u8, name, "0123456789") == null) {
+            if (iter.peek() != null) return; // TODO
             editor.currentBuffer().goToLine(std.fmt.parseInt(usize, name, 10) catch return);
         } else {
-            // TODO
+            try editor.setNotice(true, "Unknown command: \":{s}\"", .{name});
         }
     }
 }

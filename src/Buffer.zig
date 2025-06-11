@@ -11,14 +11,16 @@ pub const TextPosition = struct {
 
 lines: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u8)),
 real_cursor: TextPosition,
+destination: ?[]const u8,
 
-pub fn init(allocator: std.mem.Allocator) !Buffer {
+pub fn init(allocator: std.mem.Allocator, destination: ?[]const u8) !Buffer {
     var buffer: Buffer = .{
         .lines = .{},
         .real_cursor = .{
             .line = 1,
             .column = 1,
         },
+        .destination = if (destination) |d| try allocator.dupe(u8, d) else null,
     };
 
     try buffer.lines.append(allocator, .{});
@@ -31,6 +33,7 @@ pub fn deinit(buffer: *Buffer, allocator: std.mem.Allocator) void {
         line.deinit(allocator);
     }
     buffer.lines.deinit(allocator);
+    if (buffer.destination) |destination| allocator.free(destination);
 }
 
 pub fn visualCursor(buffer: Buffer) TextPosition {
@@ -41,8 +44,7 @@ pub fn visualCursor(buffer: Buffer) TextPosition {
 }
 
 pub fn getTitle(buffer: Buffer) []const u8 {
-    _ = buffer;
-    return "<scratch>";
+    return if (buffer.destination) |destination| destination else "[scratch]";
 }
 
 pub fn insertReturn(buffer: *Buffer, allocator: std.mem.Allocator) !void {
@@ -92,6 +94,22 @@ pub fn shiftCursor(buffer: *Buffer, direction: Editor.Direction) void {
 
 pub fn goToLine(buffer: *Buffer, line: usize) void {
     buffer.real_cursor.line = @min(@max(line, 1), buffer.lines.items.len);
+}
+
+pub fn save(buffer: *Buffer) !bool {
+    if (buffer.destination) |destination| {
+        const is_new = std.meta.isError(std.fs.cwd().access(destination, .{}));
+        const file = std.fs.cwd().createFile(destination, .{}) catch return error.FileOpenError;
+        defer file.close();
+        for (buffer.lines.items) |line| {
+            file.writer().writeAll(line.items) catch return error.FileWriteError;
+            file.writer().writeByte('\n') catch return error.FileWriteError;
+        }
+
+        return is_new;
+    } else {
+        return error.NoDestination;
+    }
 }
 
 pub fn render(buffer: Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Position {
