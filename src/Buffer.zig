@@ -13,6 +13,7 @@ read_only: bool,
 cursor_line: usize,
 cursor_col: usize,
 preferred_col: usize,
+scroll: usize,
 undo_stack: std.ArrayListUnmanaged(UndoAction),
 redo_stack: std.ArrayListUnmanaged(UndoAction),
 
@@ -53,6 +54,7 @@ pub fn init(allocator: std.mem.Allocator) !Buffer {
         .cursor_line = 0,
         .cursor_col = 0,
         .preferred_col = 0,
+        .scroll = 0,
         .undo_stack = .{},
         .redo_stack = .{},
     };
@@ -441,16 +443,38 @@ fn updateCursorFromPosition(buffer: *Buffer, position: usize) !void {
     buffer.preferred_col = col;
 }
 
+fn scrollToLine(buffer: *Buffer, line: usize, height: usize) void {
+    buffer.scroll = @min(buffer.scroll, line);
+    buffer.scroll = @max(buffer.scroll + (height - 1), line) - (height - 1);
+}
+
 pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Position {
     var arena = std.heap.ArenaAllocator.init(buffer.allocator);
     defer arena.deinit();
-    for (0..buffer.getLineCount()) |i| {
-        const line = try buffer.getLine(i, arena.allocator());
+
+    buffer.scrollToLine(buffer.cursor_line, viewport.height);
+
+    const number_col_size = @max(std.math.log10(buffer.getLineCount()) + 1, 3) + 1;
+
+    for (0..viewport.height) |i| {
+        const line_number = i + buffer.scroll;
+        const line_content = try buffer.getLine(line_number, arena.allocator());
         try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + i });
-        try tty.writer().writeAll(line);
-        try tty.writer().writeByteNTimes(' ', viewport.width - line.len);
+        if (line_number < buffer.getLineCount()) {
+            try tty.writer().print("{d:>[1]} ", .{ line_number + 1, number_col_size - 1 });
+            try tty.writer().writeAll(line_content);
+            try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - line_content.len);
+        } else {
+            try tty.writer().writeByteNTimes(' ', number_col_size);
+            try tty.writer().writeByte('~');
+            try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - 1);
+        }
     }
-    return .{ .x = viewport.x + buffer.cursor_col, .y = viewport.y + buffer.cursor_line };
+
+    return .{
+        .x = viewport.x + number_col_size + buffer.cursor_col,
+        .y = viewport.y + buffer.cursor_line - buffer.scroll,
+    };
 }
 
 pub fn save(buffer: *Buffer) !bool {

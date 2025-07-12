@@ -150,6 +150,7 @@ pub fn run(editor: *Editor) !void {
             },
             .command => |*command| switch (input) {
                 .printable => |printable| try command.append(editor.allocator, printable),
+                .backspace => _ = command.pop(),
                 .escape, .@"return" => {
                     if (input == .@"return") try runCommand(editor, command.items);
 
@@ -224,7 +225,7 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
     } else {
         if (std.mem.indexOfNone(u8, name, "0123456789") == null) {
             if (iter.peek() != null) return; // TODO
-            editor.currentBuffer().moveCursorToLine(std.fmt.parseInt(usize, name, 10) catch return);
+            editor.currentBuffer().moveCursorToLine((std.fmt.parseInt(usize, name, 10) catch return) - 1);
         } else {
             try editor.setNotice(true, "Unknown command: \":{s}\"", .{name});
         }
