@@ -142,7 +142,7 @@ pub fn getSize(tty: PosixTty) !Tty.Size {
     return .{ .width = size.col, .height = size.row };
 }
 
-fn ansiColorNumber(color: Tty.Color, bg: bool) usize {
+fn ansiStandardColorNumber(color: Tty.Color.Standard, bg: bool) usize {
     const base: usize = switch (color) {
         .black => 30,
         .red => 31,
@@ -172,10 +172,19 @@ fn ansiColorNumber(color: Tty.Color, bg: bool) usize {
 pub fn setAttributes(tty: *PosixTty, attributes: Tty.Attributes) !void {
     try tty.writer().writeAll("\x1b[0m");
     if (attributes.fg) |fg| {
-        try tty.writer().print("\x1b[{}m", .{ansiColorNumber(fg, false)});
+        switch (fg) {
+            .standard => |standard| try tty.writer().print("\x1b[{}m", .{ansiStandardColorNumber(standard, false)}),
+            .rgb => |rgb| try tty.writer().print("\x1b[38;2;{};{};{}m", rgb),
+        }
     }
     if (attributes.bg) |bg| {
-        try tty.writer().print("\x1b[{}m", .{ansiColorNumber(bg, true)});
+        switch (bg) {
+            .standard => |standard| try tty.writer().print("\x1b[{}m", .{ansiStandardColorNumber(standard, true)}),
+            .rgb => |rgb| try tty.writer().print("\x1b[48;2;{};{};{}m", rgb),
+        }
+    }
+    if (attributes.bold) {
+        try tty.writer().writeAll("\x1b[1m");
     }
 }
 

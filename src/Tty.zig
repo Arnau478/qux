@@ -40,28 +40,40 @@ pub const WriteError = Impl.WriteError;
 pub const Reader = Impl.Reader;
 pub const Writer = Impl.Writer;
 
-pub const Color = enum {
-    black,
-    red,
-    green,
-    yellow,
-    blue,
-    magenta,
-    cyan,
-    white,
-    bright_black,
-    bright_red,
-    bright_green,
-    bright_yellow,
-    bright_blue,
-    bright_magenta,
-    bright_cyan,
-    bright_white,
+pub const Color = union(enum) {
+    standard: Standard,
+    rgb: Rgb,
+
+    pub const Standard = enum {
+        black,
+        red,
+        green,
+        yellow,
+        blue,
+        magenta,
+        cyan,
+        white,
+        bright_black,
+        bright_red,
+        bright_green,
+        bright_yellow,
+        bright_blue,
+        bright_magenta,
+        bright_cyan,
+        bright_white,
+    };
+
+    pub const Rgb = struct {
+        r: u8,
+        g: u8,
+        b: u8,
+    };
 };
 
 pub const Attributes = struct {
     fg: ?Color = null,
     bg: ?Color = null,
+    bold: bool = false,
 };
 
 pub const CursorShape = enum {

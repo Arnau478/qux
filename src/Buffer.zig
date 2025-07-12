@@ -448,7 +448,7 @@ fn scrollToLine(buffer: *Buffer, line: usize, height: usize) void {
     buffer.scroll = @max(buffer.scroll + (height - 1), line) - (height - 1);
 }
 
-pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Position {
+pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Editor.Theme) !Tty.Position {
     var arena = std.heap.ArenaAllocator.init(buffer.allocator);
     defer arena.deinit();
 
@@ -461,12 +461,21 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Positi
         const line_content = try buffer.getLine(line_number, arena.allocator());
         try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + i });
         if (line_number < buffer.getLineCount()) {
+            if (line_number == buffer.cursor_line) {
+                try tty.setAttributes(theme.number_column_current);
+            } else {
+                try tty.setAttributes(theme.number_column);
+            }
             try tty.writer().print("{d:>[1]} ", .{ line_number + 1, number_col_size - 1 });
+            try tty.setAttributes(.{ .bg = theme.background });
             try tty.writer().writeAll(line_content);
             try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - line_content.len);
         } else {
+            try tty.setAttributes(theme.number_column);
             try tty.writer().writeByteNTimes(' ', number_col_size);
+            try tty.setAttributes(.{ .bg = theme.background, .fg = theme.line_placeholder });
             try tty.writer().writeByte('~');
+            try tty.setAttributes(.{ .bg = theme.background });
             try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - 1);
         }
     }

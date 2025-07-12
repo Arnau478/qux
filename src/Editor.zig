@@ -4,6 +4,8 @@ const std = @import("std");
 const Tty = @import("Tty.zig");
 const Buffer = @import("Buffer.zig");
 
+pub const Theme = @import("editor/Theme.zig");
+
 pub const Viewport = struct {
     x: usize,
     y: usize,
@@ -31,11 +33,9 @@ pub const Mode = union(enum) {
         };
     }
 
-    pub fn displayColor(mode: Mode) Tty.Color {
+    pub fn displayColor(mode: Mode, theme: Theme) Tty.Color {
         return switch (mode) {
-            .normal => .cyan,
-            .insert => .green,
-            .command => .yellow,
+            inline else => |_, m| @field(theme.mode, @tagName(m)),
         };
     }
 };
@@ -47,6 +47,7 @@ buffers: std.ArrayListUnmanaged(Buffer),
 current_buffer_idx: usize,
 notice: ?[]const u8,
 notice_is_error: bool,
+theme: Theme,
 
 pub fn init(allocator: std.mem.Allocator, tty: *Tty, initial_buffer_destinations: []const []const u8) !Editor {
     var editor: Editor = .{
@@ -57,6 +58,7 @@ pub fn init(allocator: std.mem.Allocator, tty: *Tty, initial_buffer_destinations
         .current_buffer_idx = 0,
         .notice = null,
         .notice_is_error = false,
+        .theme = Theme.default,
     };
 
     if (initial_buffer_destinations.len == 0) {
@@ -108,7 +110,7 @@ pub fn run(editor: *Editor) !void {
         try editor.drawBar(tty_size);
 
         const buffer_viewport: Viewport = .{ .x = 0, .y = 0, .width = tty_size.width, .height = tty_size.height - 2 };
-        var cursor_pos = try editor.currentBuffer().render(editor.tty, buffer_viewport);
+        var cursor_pos = try editor.currentBuffer().render(editor.tty, buffer_viewport, editor.theme);
 
         switch (editor.mode) {
             .command => |command| cursor_pos = .{ .x = command.items.len + 1, .y = tty_size.height - 1 },
@@ -168,10 +170,13 @@ fn drawBar(editor: Editor, tty_size: Tty.Size) !void {
     try editor.tty.clearLine(tty_size.height - 1);
 
     try editor.tty.moveCursor(.{ .x = 0, .y = tty_size.height - 2 });
-    try editor.tty.setAttributes(.{ .bg = editor.mode.displayColor(), .fg = .black });
+    try editor.tty.setAttributes(.{ .bg = editor.theme.main_bar_background });
+    try editor.tty.writer().writeByteNTimes(' ', tty_size.width);
+
+    try editor.tty.moveCursor(.{ .x = 0, .y = tty_size.height - 2 });
+    try editor.tty.setAttributes(.{ .bg = editor.mode.displayColor(editor.theme), .fg = editor.theme.main_bar_background, .bold = true });
     try editor.tty.writer().print(" {s} ", .{editor.mode.displayName()});
-    try editor.tty.resetAttributes();
-    try editor.tty.setAttributes(.{ .fg = editor.mode.displayColor() });
+    try editor.tty.setAttributes(.{ .fg = editor.mode.displayColor(editor.theme), .bg = editor.theme.main_bar_background });
     if (editor.currentBuffer().destination) |destination| {
         try editor.tty.writer().print(" {s}", .{destination});
         if (editor.currentBuffer().dirty) {
@@ -183,17 +188,21 @@ fn drawBar(editor: Editor, tty_size: Tty.Size) !void {
     } else {
         try editor.tty.writer().writeAll(" [scratch]");
     }
-    try editor.tty.resetAttributes();
+    try editor.tty.setAttributes(.{ .bg = editor.theme.main_bar_background });
     try editor.tty.writer().print(" ({}, {})", .{ editor.currentBuffer().cursor_line + 1, editor.currentBuffer().cursor_col + 1 });
 
     try editor.tty.moveCursor(.{ .x = 0, .y = tty_size.height - 1 });
+    try editor.tty.setAttributes(.{ .bg = editor.theme.background });
+    try editor.tty.writer().writeByteNTimes(' ', tty_size.width);
+
+    try editor.tty.moveCursor(.{ .x = 0, .y = tty_size.height - 1 });
+    try editor.tty.setAttributes(.{ .bg = editor.theme.background });
     if (editor.mode == .command) {
         try editor.tty.writer().print(":{s}", .{editor.mode.command.items});
     } else {
         if (editor.notice) |notice| {
-            try editor.tty.setAttributes(.{ .fg = if (editor.notice_is_error) .red else null });
+            try editor.tty.setAttributes(.{ .fg = if (editor.notice_is_error) editor.theme.notice_error else editor.theme.notice_info, .bg = editor.theme.background });
             try editor.tty.writer().writeAll(notice);
-            try editor.tty.resetAttributes();
         }
     }
 }
@@ -222,6 +231,17 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
         };
 
         if (is_new) try editor.setNotice(false, "Created file \"{s}\"", .{editor.currentBuffer().destination.?});
+    } else if (std.mem.eql(u8, name, "theme")) {
+        const theme_name = iter.next() orelse return; // TODO
+        if (iter.peek() != null) return; // TODO
+
+        if (std.mem.eql(u8, theme_name, "default")) {
+            editor.theme = .default;
+        } else if (std.mem.eql(u8, theme_name, "kanagawa")) {
+            editor.theme = .kanagawa;
+        } else {
+            try editor.setNotice(true, "No theme named \"{s}\"", .{theme_name});
+        }
     } else {
         if (std.mem.indexOfNone(u8, name, "0123456789") == null) {
             if (iter.peek() != null) return; // TODO
