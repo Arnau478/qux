@@ -186,6 +186,9 @@ pub fn setAttributes(tty: *PosixTty, attributes: Tty.Attributes) !void {
     if (attributes.bold) {
         try tty.writer().writeAll("\x1b[1m");
     }
+    if (attributes.italic) {
+        try tty.writer().writeAll("\x1b[3m");
+    }
 }
 
 pub fn moveCursor(tty: *PosixTty, pos: Tty.Position) !void {

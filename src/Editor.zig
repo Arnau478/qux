@@ -126,6 +126,7 @@ pub fn run(editor: *Editor) !void {
         try editor.tty.flush();
 
         const input = try editor.tty.readInput();
+        editor.unsetNotice();
         switch (editor.mode) {
             .normal => switch (input) {
                 .printable => |printable| switch (printable) {
@@ -134,7 +135,6 @@ pub fn run(editor: *Editor) !void {
                     ':' => editor.mode = .{ .command = .{} },
                     else => {},
                 },
-                .escape => editor.unsetNotice(),
                 .arrow => |arrow| switch (arrow) {
                     inline else => |a| editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
                 },
@@ -241,6 +241,17 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
             editor.theme = .kanagawa;
         } else {
             try editor.setNotice(true, "No theme named \"{s}\"", .{theme_name});
+        }
+    } else if (std.mem.eql(u8, name, "filetype")) {
+        if (iter.next()) |filetype_str| {
+            if (iter.peek() != null) return; // TODO
+            if (std.meta.stringToEnum(Buffer.Filetype, filetype_str)) |filetype| {
+                editor.currentBuffer().filetype = filetype;
+            } else {
+                try editor.setNotice(true, "Unknown filetype: {s}", .{filetype_str});
+            }
+        } else {
+            try editor.setNotice(false, "filetype={s}", .{if (editor.currentBuffer().filetype) |filetype| @tagName(filetype) else "(none)"});
         }
     } else {
         if (std.mem.indexOfNone(u8, name, "0123456789") == null) {

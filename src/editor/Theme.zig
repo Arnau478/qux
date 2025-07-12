@@ -14,6 +14,10 @@ pub const default: Theme = .{
         .insert = .{ .standard = .green },
         .command = .{ .standard = .yellow },
     },
+    .syntax = .{
+        .comment = .{ .fg = .{ .standard = .bright_black } },
+        .string = .{ .fg = .{ .standard = .green } },
+    },
 };
 
 // Based on https://github.com/rebelot/kanagawa.nvim
@@ -30,6 +34,10 @@ pub const kanagawa: Theme = .{
         .insert = .{ .rgb = .{ .r = 0x98, .g = 0xbb, .b = 0x6c } },
         .command = .{ .rgb = .{ .r = 0xc0, .g = 0xa3, .b = 0x6e } },
     },
+    .syntax = .{
+        .comment = .{ .fg = .{ .rgb = .{ .r = 0x72, .g = 0x71, .b = 0x69 } }, .italic = true },
+        .string = .{ .fg = .{ .rgb = .{ .r = 0x98, .g = 0xbb, .b = 0x6c } } },
+    },
 };
 
 background: ?Tty.Color,
@@ -43,4 +51,8 @@ mode: struct {
     normal: Tty.Color,
     insert: Tty.Color,
     command: Tty.Color,
-}
+},
+syntax: struct {
+    comment: Tty.Attributes,
+    string: Tty.Attributes,
+},

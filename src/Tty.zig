@@ -74,6 +74,7 @@ pub const Attributes = struct {
     fg: ?Color = null,
     bg: ?Color = null,
     bold: bool = false,
+    italic: bool = false,
 };
 
 pub const CursorShape = enum {

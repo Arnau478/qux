@@ -1,6 +1,8 @@
 const Buffer = @This();
 
 const std = @import("std");
+const tree_sitter = @import("tree_sitter");
+const tree_sitter_query_sources = @import("tree_sitter_query_sources");
 const Editor = @import("Editor.zig");
 const Tty = @import("Tty.zig");
 const GapBuffer = @import("gap_buffer.zig").GapBuffer;
@@ -16,6 +18,64 @@ preferred_col: usize,
 scroll: usize,
 undo_stack: std.ArrayListUnmanaged(UndoAction),
 redo_stack: std.ArrayListUnmanaged(UndoAction),
+filetype: ?Filetype,
+tree_sitter_filetype: ?Filetype,
+tree_sitter_parser: *tree_sitter.Parser,
+tree_sitter_tree: ?*tree_sitter.Tree,
+
+const tree_sitter_grammars = struct {
+    extern fn tree_sitter_c() callconv(.c) *tree_sitter.Language;
+    extern fn tree_sitter_zig() callconv(.c) *tree_sitter.Language;
+};
+
+var tree_sitter_query_cache: std.enums.EnumFieldStruct(Filetype, ?*tree_sitter.Query, @as(?*tree_sitter.Query, null)) = .{};
+
+pub const Filetype = enum {
+    c,
+    zig,
+
+    fn treeSitterName(filetype: Filetype) []const u8 {
+        return switch (filetype) {
+            .c => "c",
+            .zig => "zig",
+        };
+    }
+
+    pub fn treeSitterGrammar(filetype: Filetype) *const fn () callconv(.c) *tree_sitter.Language {
+        switch (filetype) {
+            inline else => |t| {
+                const name = comptime treeSitterName(t);
+                return @field(tree_sitter_grammars, std.fmt.comptimePrint("tree_sitter_{s}", .{name}));
+            },
+        }
+    }
+
+    pub fn treeSitterQuerySource(filetype: Filetype) []const u8 {
+        switch (filetype) {
+            inline else => |t| {
+                const name = comptime treeSitterName(t);
+                return @field(tree_sitter_query_sources, name);
+            },
+        }
+    }
+
+    pub fn treeSitterQuery(filetype: Filetype) *tree_sitter.Query {
+        switch (filetype) {
+            inline else => |t| {
+                if (@field(tree_sitter_query_cache, @tagName(t))) |query| {
+                    return query;
+                } else {
+                    var error_offset: u32 = 0;
+                    const query = tree_sitter.Query.create(filetype.treeSitterGrammar()(), filetype.treeSitterQuerySource(), &error_offset) catch @panic("TODO");
+
+                    @field(tree_sitter_query_cache, @tagName(t)) = query;
+
+                    return query;
+                }
+            },
+        }
+    }
+};
 
 pub const UndoAction = union(enum) {
     insert: struct {
@@ -57,6 +117,10 @@ pub fn init(allocator: std.mem.Allocator) !Buffer {
         .scroll = 0,
         .undo_stack = .{},
         .redo_stack = .{},
+        .filetype = null,
+        .tree_sitter_filetype = null,
+        .tree_sitter_parser = tree_sitter.Parser.create(),
+        .tree_sitter_tree = null,
     };
 }
 
@@ -65,7 +129,11 @@ pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer
     buffer.destination = try allocator.dupe(u8, file_path);
 
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return buffer,
+        error.FileNotFound => {
+            buffer.filetype = guessFiletype(file_path, null);
+
+            return buffer;
+        },
         else => @panic("TODO"),
     };
     defer file.close();
@@ -84,6 +152,8 @@ pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer
     try buffer.content.insertSlice(content);
     buffer.dirty = false;
 
+    buffer.filetype = guessFiletype(file_path, content);
+
     return buffer;
 }
 
@@ -101,6 +171,8 @@ pub fn deinit(buffer: *Buffer) void {
         action.deinit(buffer.allocator);
     }
     buffer.redo_stack.deinit(buffer.allocator);
+
+    buffer.tree_sitter_parser.destroy();
 }
 
 pub fn insertCharacter(buffer: *Buffer, char: u8) !void {
@@ -286,7 +358,7 @@ pub fn getLineCount(buffer: *Buffer) usize {
     return count;
 }
 
-pub fn getLineLength(buffer: *Buffer, line: usize) usize {
+pub fn getLineStartPos(buffer: *Buffer, line: usize) usize {
     var current_line: usize = 0;
     var line_start: usize = 0;
 
@@ -300,8 +372,12 @@ pub fn getLineLength(buffer: *Buffer, line: usize) usize {
         }
     }
 
+    return line_start;
+}
+
+pub fn getLineLength(buffer: *Buffer, line: usize) usize {
     var len: usize = 0;
-    for (line_start..buffer.content.getLen()) |i| {
+    for (buffer.getLineStartPos(line)..buffer.content.getLen()) |i| {
         const char = buffer.content.getAt(i) orelse break;
         if (char == '\n') break;
         len += 1;
@@ -311,21 +387,8 @@ pub fn getLineLength(buffer: *Buffer, line: usize) usize {
 }
 
 pub fn getLine(buffer: *Buffer, line: usize, allocator: std.mem.Allocator) ![]u8 {
-    var current_line: usize = 0;
-    var line_start: usize = 0;
-
-    {
-        var i: usize = 0;
-        while (i < buffer.content.getLen() and current_line < line) : (i += 1) {
-            if (buffer.content.getAt(i) == '\n') {
-                current_line += 1;
-                line_start = i + 1;
-            }
-        }
-    }
-
     var line_content: std.ArrayList(u8) = .init(allocator);
-    for (line_start..buffer.content.getLen()) |i| {
+    for (buffer.getLineStartPos(line)..buffer.content.getLen()) |i| {
         const char = buffer.content.getAt(i) orelse break;
         if (char == '\n') break;
         try line_content.append(char);
@@ -448,9 +511,55 @@ fn scrollToLine(buffer: *Buffer, line: usize, height: usize) void {
     buffer.scroll = @max(buffer.scroll + (height - 1), line) - (height - 1);
 }
 
+pub const HighlightType = enum {
+    comment,
+    string,
+
+    pub fn getAttributes(highlight_type: HighlightType, theme: Editor.Theme) Tty.Attributes {
+        return switch (highlight_type) {
+            .comment => theme.syntax.comment,
+            .string => theme.syntax.string,
+        };
+    }
+};
+
 pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Editor.Theme) !Tty.Position {
     var arena = std.heap.ArenaAllocator.init(buffer.allocator);
     defer arena.deinit();
+
+    if (buffer.tree_sitter_filetype != buffer.filetype) {
+        buffer.tree_sitter_filetype = buffer.filetype;
+        if (buffer.filetype) |filetype| {
+            buffer.tree_sitter_parser.setLanguage(filetype.treeSitterGrammar()()) catch @panic("TODO");
+        } else {
+            buffer.tree_sitter_parser.setLanguage(null) catch unreachable;
+        }
+    }
+
+    const content = try buffer.getAllContent(arena.allocator());
+    buffer.tree_sitter_tree = buffer.tree_sitter_parser.parseString(content, null).?; // TODO: Incremental parsing
+
+    const tree_sitter_query_cursor = cursor: {
+        if (buffer.filetype) |filetype| {
+            const query = filetype.treeSitterQuery();
+            const cursor = tree_sitter.QueryCursor.create();
+            cursor.exec(query, buffer.tree_sitter_tree.?.rootNode());
+
+            break :cursor cursor;
+        } else {
+            break :cursor null;
+        }
+    };
+
+    defer if (tree_sitter_query_cursor) |cursor| cursor.destroy();
+
+    var tree_sitter_captures = std.ArrayList(tree_sitter.Query.Capture).init(arena.allocator());
+    if (tree_sitter_query_cursor) |cursor| {
+        while (cursor.nextCapture()) |next_capture| {
+            const capture = next_capture[1].captures[next_capture[0]];
+            try tree_sitter_captures.append(capture);
+        }
+    }
 
     buffer.scrollToLine(buffer.cursor_line, viewport.height);
 
@@ -459,16 +568,49 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
     for (0..viewport.height) |i| {
         const line_number = i + buffer.scroll;
         const line_content = try buffer.getLine(line_number, arena.allocator());
+
         try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + i });
         if (line_number < buffer.getLineCount()) {
+            const line_start_pos = buffer.getLineStartPos(line_number);
+
+            const line_highlight_types = try arena.allocator().alloc(?HighlightType, line_content.len);
+            @memset(line_highlight_types, null);
+            for (tree_sitter_captures.items) |capture| {
+                const name = buffer.filetype.?.treeSitterQuery().captureNameForId(capture.index).?;
+                if (capture.node.endByte() <= line_start_pos) continue;
+                if (capture.node.startByte() >= line_start_pos + line_content.len) continue;
+
+                const start = @max(capture.node.startByte(), line_start_pos);
+                const end = @min(capture.node.endByte(), line_start_pos + line_content.len);
+
+                for (line_highlight_types[start - line_start_pos .. end - line_start_pos]) |*t| {
+                    if (t.* == null) {
+                        const highlight_type: ?HighlightType = if (std.mem.eql(u8, name, "comment"))
+                            .comment
+                        else if (std.mem.eql(u8, name, "string"))
+                            .string
+                        else blk: {
+                            std.log.warn("Unknown tree sitter capture: @{s}", .{name});
+                            break :blk null;
+                        };
+                        t.* = highlight_type;
+                    }
+                }
+            }
+
             if (line_number == buffer.cursor_line) {
                 try tty.setAttributes(theme.number_column_current);
             } else {
                 try tty.setAttributes(theme.number_column);
             }
             try tty.writer().print("{d:>[1]} ", .{ line_number + 1, number_col_size - 1 });
+            for (line_content, line_highlight_types) |char, line_highlight_type| {
+                var code_attributes: Tty.Attributes = if (line_highlight_type) |t| t.getAttributes(theme) else .{};
+                if (code_attributes.bg == null) code_attributes.bg = theme.background;
+                try tty.setAttributes(code_attributes);
+                try tty.writer().writeByte(char);
+            }
             try tty.setAttributes(.{ .bg = theme.background });
-            try tty.writer().writeAll(line_content);
             try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - line_content.len);
         } else {
             try tty.setAttributes(theme.number_column);
@@ -509,4 +651,20 @@ pub fn save(buffer: *Buffer) !bool {
     } else {
         return error.NoDestination;
     }
+}
+
+fn guessFiletype(file_path: []const u8, content: ?[]const u8) ?Filetype {
+    const file_name = std.fs.path.basename(file_path);
+
+    if (std.mem.endsWith(u8, file_name, ".c") or std.mem.endsWith(u8, file_name, ".h")) {
+        return .zig;
+    }
+
+    if (std.mem.endsWith(u8, file_name, ".zig") or std.mem.endsWith(u8, file_name, ".zon")) {
+        return .zig;
+    }
+
+    _ = content;
+
+    return null;
 }
