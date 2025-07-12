@@ -8,7 +8,8 @@ const GapBuffer = @import("gap_buffer.zig").GapBuffer;
 allocator: std.mem.Allocator,
 content: GapBuffer(u8),
 destination: ?[]const u8,
-is_dirty: bool,
+dirty: bool,
+read_only: bool,
 cursor_line: usize,
 cursor_col: usize,
 preferred_col: usize,
@@ -47,7 +48,8 @@ pub fn init(allocator: std.mem.Allocator) !Buffer {
         .allocator = allocator,
         .content = try GapBuffer(u8).init(allocator),
         .destination = null,
-        .is_dirty = false,
+        .dirty = false,
+        .read_only = false,
         .cursor_line = 0,
         .cursor_col = 0,
         .preferred_col = 0,
@@ -66,11 +68,19 @@ pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer
     };
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
-    defer allocator.free(content);
+    if (std.meta.isError(std.fs.cwd().access(file_path, .{ .mode = .read_write }))) {
+        buffer.read_only = true;
+    }
+
+    const raw_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(raw_content);
+    var content = raw_content;
+    if (content[content.len - 1] == '\n') {
+        content = content[0 .. content.len - 1];
+    }
 
     try buffer.content.insertSlice(content);
-    buffer.is_dirty = false;
+    buffer.dirty = false;
 
     return buffer;
 }
@@ -112,7 +122,7 @@ pub fn insertCharacter(buffer: *Buffer, char: u8) !void {
     }
     buffer.preferred_col = buffer.cursor_col;
 
-    buffer.is_dirty = true;
+    buffer.dirty = true;
 }
 
 pub fn insertSlice(buffer: *Buffer, slice: []const u8) !void {
@@ -138,7 +148,7 @@ pub fn insertSlice(buffer: *Buffer, slice: []const u8) !void {
     }
     buffer.preferred_col = buffer.cursor_col;
 
-    buffer.is_dirty = true;
+    buffer.dirty = true;
 }
 
 pub fn deleteCharacter(buffer: *Buffer) !void {
@@ -157,7 +167,7 @@ pub fn deleteCharacter(buffer: *Buffer) !void {
         },
     });
 
-    buffer.is_dirty = true;
+    buffer.dirty = true;
 }
 
 pub fn backspace(buffer: *Buffer) !void {
@@ -186,7 +196,7 @@ pub fn backspace(buffer: *Buffer) !void {
     }
     buffer.preferred_col = buffer.cursor_col;
 
-    buffer.is_dirty = true;
+    buffer.dirty = true;
 }
 
 pub fn moveCursor(buffer: *Buffer, direction: Editor.Direction) void {
@@ -444,7 +454,26 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Positi
 }
 
 pub fn save(buffer: *Buffer) !bool {
-    // TODO
-    buffer.is_dirty = false;
-    return false;
+    if (buffer.destination) |destination| {
+        const is_new = std.meta.isError(std.fs.cwd().access(destination, .{}));
+
+        if (!is_new and std.meta.isError(std.fs.cwd().access(destination, .{ .mode = .read_write }))) {
+            buffer.read_only = true;
+        }
+
+        const file = std.fs.cwd().createFile(destination, .{}) catch return error.FileOpenError;
+        defer file.close();
+
+        const content = try buffer.getAllContent(buffer.allocator);
+        defer buffer.allocator.free(content);
+
+        file.writeAll(content) catch return error.FileWriteError;
+        file.writer().writeByte('\n') catch return error.FileWriteError;
+
+        buffer.dirty = false;
+
+        return is_new;
+    } else {
+        return error.NoDestination;
+    }
 }

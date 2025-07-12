@@ -173,8 +173,11 @@ fn drawBar(editor: Editor, tty_size: Tty.Size) !void {
     try editor.tty.setAttributes(.{ .fg = editor.mode.displayColor() });
     if (editor.currentBuffer().destination) |destination| {
         try editor.tty.writer().print(" {s}", .{destination});
-        if (editor.currentBuffer().is_dirty) {
+        if (editor.currentBuffer().dirty) {
             try editor.tty.writer().writeAll(" [+]");
+        }
+        if (editor.currentBuffer().read_only) {
+            try editor.tty.writer().writeAll(" [RO]");
         }
     } else {
         try editor.tty.writer().writeAll(" [scratch]");
@@ -211,6 +214,7 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
                 error.NoDestination => try editor.setNotice(true, "No destination assigned to buffer", .{}),
                 error.FileOpenError => try editor.setNotice(true, "Error opening file \"{s}\"", .{editor.currentBuffer().destination.?}),
                 error.FileWriteError => try editor.setNotice(true, "Error writing file \"{s}\"", .{editor.currentBuffer().destination.?}),
+                error.OutOfMemory => return err,
             }
 
             break :blk false;
