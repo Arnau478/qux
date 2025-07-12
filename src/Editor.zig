@@ -60,10 +60,10 @@ pub fn init(allocator: std.mem.Allocator, tty: *Tty, initial_buffer_destinations
     };
 
     if (initial_buffer_destinations.len == 0) {
-        try editor.buffers.append(allocator, try .init(allocator, null));
+        try editor.buffers.append(allocator, try .init(allocator));
     } else {
         for (initial_buffer_destinations) |dest| {
-            try editor.buffers.append(allocator, try .init(allocator, dest));
+            try editor.buffers.append(allocator, try .initFromFile(allocator, dest));
         }
     }
 
@@ -92,7 +92,7 @@ fn currentBuffer(editor: Editor) *Buffer {
 }
 
 fn quitCurrentBuffer(editor: *Editor) void {
-    editor.currentBuffer().deinit(editor.allocator);
+    editor.currentBuffer().deinit();
     _ = editor.buffers.orderedRemove(editor.current_buffer_idx);
     if (editor.current_buffer_idx > 0) editor.current_buffer_idx -= 1;
 }
@@ -134,17 +134,17 @@ pub fn run(editor: *Editor) !void {
                 },
                 .escape => editor.unsetNotice(),
                 .arrow => |arrow| switch (arrow) {
-                    inline else => |a| editor.currentBuffer().shiftCursor(@field(Direction, @tagName(a))),
+                    inline else => |a| editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
                 },
                 else => {},
             },
             .insert => switch (input) {
-                .printable => |printable| try editor.currentBuffer().insertCharacter(editor.allocator, printable),
-                .@"return" => try editor.currentBuffer().insertReturn(editor.allocator),
-                .backspace => try editor.currentBuffer().insertBackspace(),
+                .printable => |printable| try editor.currentBuffer().insertCharacter(printable),
+                .@"return" => try editor.currentBuffer().insertCharacter('\n'),
+                .backspace => try editor.currentBuffer().backspace(),
                 .escape => editor.mode = .normal,
                 .arrow => |arrow| switch (arrow) {
-                    inline else => |a| editor.currentBuffer().shiftCursor(@field(Direction, @tagName(a))),
+                    inline else => |a| editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
                 },
                 else => {},
             },
@@ -171,9 +171,16 @@ fn drawBar(editor: Editor, tty_size: Tty.Size) !void {
     try editor.tty.writer().print(" {s} ", .{editor.mode.displayName()});
     try editor.tty.resetAttributes();
     try editor.tty.setAttributes(.{ .fg = editor.mode.displayColor() });
-    try editor.tty.writer().print(" {s}", .{editor.currentBuffer().getTitle()});
+    if (editor.currentBuffer().destination) |destination| {
+        try editor.tty.writer().print(" {s}", .{destination});
+        if (editor.currentBuffer().is_dirty) {
+            try editor.tty.writer().writeAll(" [+]");
+        }
+    } else {
+        try editor.tty.writer().writeAll(" [scratch]");
+    }
     try editor.tty.resetAttributes();
-    try editor.tty.writer().print(" ({}, {})", .{ editor.currentBuffer().visualCursor().line, editor.currentBuffer().visualCursor().column });
+    try editor.tty.writer().print(" ({}, {})", .{ editor.currentBuffer().cursor_line + 1, editor.currentBuffer().cursor_col + 1 });
 
     try editor.tty.moveCursor(.{ .x = 0, .y = tty_size.height - 1 });
     if (editor.mode == .command) {
@@ -213,7 +220,7 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
     } else {
         if (std.mem.indexOfNone(u8, name, "0123456789") == null) {
             if (iter.peek() != null) return; // TODO
-            editor.currentBuffer().goToLine(std.fmt.parseInt(usize, name, 10) catch return);
+            editor.currentBuffer().moveCursorToLine(std.fmt.parseInt(usize, name, 10) catch return);
         } else {
             try editor.setNotice(true, "Unknown command: \":{s}\"", .{name});
         }

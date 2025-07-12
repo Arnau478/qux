@@ -3,130 +3,448 @@ const Buffer = @This();
 const std = @import("std");
 const Editor = @import("Editor.zig");
 const Tty = @import("Tty.zig");
+const GapBuffer = @import("gap_buffer.zig").GapBuffer;
 
-pub const TextPosition = struct {
-    line: usize,
-    column: usize,
+allocator: std.mem.Allocator,
+content: GapBuffer(u8),
+destination: ?[]const u8,
+is_dirty: bool,
+cursor_line: usize,
+cursor_col: usize,
+preferred_col: usize,
+undo_stack: std.ArrayListUnmanaged(UndoAction),
+redo_stack: std.ArrayListUnmanaged(UndoAction),
+
+pub const UndoAction = union(enum) {
+    insert: struct {
+        position: usize,
+        text: []const u8,
+    },
+    delete: struct {
+        position: usize,
+        text: []const u8,
+    },
+    replace: struct {
+        position: usize,
+        old_text: []const u8,
+        new_text: []const u8,
+    },
+
+    pub fn deinit(action: UndoAction, allocator: std.mem.Allocator) void {
+        switch (action) {
+            .insert => |insert| allocator.free(insert.text),
+            .delete => |delete| allocator.free(delete.text),
+            .replace => |replace| {
+                allocator.free(replace.old_text);
+                allocator.free(replace.new_text);
+            },
+        }
+    }
 };
 
-lines: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u8)),
-real_cursor: TextPosition,
-destination: ?[]const u8,
-
-pub fn init(allocator: std.mem.Allocator, destination: ?[]const u8) !Buffer {
-    var buffer: Buffer = .{
-        .lines = .{},
-        .real_cursor = .{
-            .line = 1,
-            .column = 1,
-        },
-        .destination = if (destination) |d| try allocator.dupe(u8, d) else null,
+pub fn init(allocator: std.mem.Allocator) !Buffer {
+    return .{
+        .allocator = allocator,
+        .content = try GapBuffer(u8).init(allocator),
+        .destination = null,
+        .is_dirty = false,
+        .cursor_line = 0,
+        .cursor_col = 0,
+        .preferred_col = 0,
+        .undo_stack = .{},
+        .redo_stack = .{},
     };
+}
 
-    try buffer.lines.append(allocator, .{});
+pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer {
+    var buffer = try Buffer.init(allocator);
+    buffer.destination = try allocator.dupe(u8, file_path);
+
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return buffer,
+        else => @panic("TODO"),
+    };
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(content);
+
+    try buffer.content.insertSlice(content);
+    buffer.is_dirty = false;
 
     return buffer;
 }
 
-pub fn deinit(buffer: *Buffer, allocator: std.mem.Allocator) void {
-    for (buffer.lines.items) |*line| {
-        line.deinit(allocator);
+pub fn deinit(buffer: *Buffer) void {
+    buffer.content.deinit();
+
+    if (buffer.destination) |destination| buffer.allocator.free(destination);
+
+    for (buffer.undo_stack.items) |action| {
+        action.deinit(buffer.allocator);
     }
-    buffer.lines.deinit(allocator);
-    if (buffer.destination) |destination| allocator.free(destination);
-}
+    buffer.undo_stack.deinit(buffer.allocator);
 
-pub fn visualCursor(buffer: Buffer) TextPosition {
-    return .{
-        .column = @min(buffer.real_cursor.column, buffer.lines.items[buffer.real_cursor.line - 1].items.len + 1),
-        .line = buffer.real_cursor.line,
-    };
-}
-
-pub fn getTitle(buffer: Buffer) []const u8 {
-    return if (buffer.destination) |destination| destination else "[scratch]";
-}
-
-pub fn insertReturn(buffer: *Buffer, allocator: std.mem.Allocator) !void {
-    const slice = buffer.lines.items[buffer.real_cursor.line - 1].items[buffer.visualCursor().column - 1 ..];
-    try buffer.lines.insert(allocator, buffer.real_cursor.line, .{});
-    try buffer.lines.items[buffer.real_cursor.line].appendSlice(allocator, slice);
-    for (0..slice.len) |_| _ = buffer.lines.items[buffer.real_cursor.line - 1].pop().?;
-    buffer.real_cursor = .{
-        .column = 1,
-        .line = buffer.real_cursor.line + 1,
-    };
-}
-
-pub fn insertBackspace(buffer: *Buffer) !void {
-    if (buffer.visualCursor().column > 1) {
-        buffer.real_cursor.column = buffer.visualCursor().column - 1;
-        _ = buffer.lines.items[buffer.real_cursor.line - 1].orderedRemove(buffer.visualCursor().column - 1);
+    for (buffer.redo_stack.items) |action| {
+        action.deinit(buffer.allocator);
     }
+    buffer.redo_stack.deinit(buffer.allocator);
 }
 
-pub fn insertCharacter(buffer: *Buffer, allocator: std.mem.Allocator, char: u8) !void {
-    buffer.real_cursor = buffer.visualCursor();
-    try buffer.lines.items[buffer.real_cursor.line - 1].insert(allocator, buffer.real_cursor.column - 1, char);
-    buffer.real_cursor.column += 1;
+pub fn insertCharacter(buffer: *Buffer, char: u8) !void {
+    const position = try buffer.getCursorPosition();
+
+    buffer.content.moveGapTo(position);
+    try buffer.content.insert(char);
+
+    try buffer.recordUndoAction(.{
+        .insert = .{
+            .position = position,
+            .text = try buffer.allocator.dupe(u8, &[_]u8{char}),
+        },
+    });
+
+    if (char == '\n') {
+        buffer.cursor_line += 1;
+        buffer.cursor_col = 0;
+    } else {
+        buffer.cursor_col += 1;
+    }
+    buffer.preferred_col = buffer.cursor_col;
+
+    buffer.is_dirty = true;
 }
 
-pub fn shiftCursor(buffer: *Buffer, direction: Editor.Direction) void {
+pub fn insertSlice(buffer: *Buffer, slice: []const u8) !void {
+    const position = try buffer.getCursorPosition();
+
+    buffer.content.moveGapTo(position);
+    buffer.content.insertSlice(slice);
+
+    try buffer.recordUndoAction(.{
+        .insert = .{
+            .position = position,
+            .text = try buffer.allocator.dupe(u8, slice),
+        },
+    });
+
+    for (slice) |char| {
+        if (char == '\n') {
+            buffer.cursor_line += 1;
+            buffer.cursor_col = 0;
+        } else {
+            buffer.cursor_col += 1;
+        }
+    }
+    buffer.preferred_col = buffer.cursor_col;
+
+    buffer.is_dirty = true;
+}
+
+pub fn deleteCharacter(buffer: *Buffer) !void {
+    const position = try buffer.getCursorPosition();
+    if (position >= buffer.content.getLen()) return;
+
+    const char = buffer.content.getAt(position);
+
+    buffer.content.moveGapTo(position);
+    buffer.content.deleteForwards();
+
+    try buffer.recordUndoAction(.{
+        .delete = .{
+            .position = position,
+            .text = try buffer.allocator.dupe(u8, &[_]u8{char}),
+        },
+    });
+
+    buffer.is_dirty = true;
+}
+
+pub fn backspace(buffer: *Buffer) !void {
+    if (buffer.cursor_line == 0 and buffer.cursor_col == 0) return;
+
+    const position = try buffer.getCursorPosition();
+    if (position == 0) return;
+
+    const char = buffer.content.getAt(position - 1) orelse return;
+
+    buffer.content.moveGapTo(position);
+    buffer.content.deleteBackwards();
+
+    try buffer.recordUndoAction(.{
+        .delete = .{
+            .position = position - 1,
+            .text = try buffer.allocator.dupe(u8, &[_]u8{char}),
+        },
+    });
+
+    if (char == '\n') {
+        buffer.cursor_line -= 1;
+        buffer.cursor_col = buffer.getLineLength(buffer.cursor_line);
+    } else {
+        buffer.cursor_col -= 1;
+    }
+    buffer.preferred_col = buffer.cursor_col;
+
+    buffer.is_dirty = true;
+}
+
+pub fn moveCursor(buffer: *Buffer, direction: Editor.Direction) void {
     switch (direction) {
-        .up => if (buffer.real_cursor.line > 1) {
-            buffer.real_cursor.line -= 1;
-        } else {
-            // TODO: Go to the start
+        .left => {
+            if (buffer.cursor_col > 0) {
+                buffer.cursor_col -= 1;
+            } else if (buffer.cursor_line > 0) {
+                buffer.cursor_line -= 1;
+                buffer.cursor_col = buffer.getLineLength(buffer.cursor_line);
+            }
+            buffer.preferred_col = buffer.cursor_col;
         },
-        .down => if (buffer.real_cursor.line < buffer.lines.items.len) {
-            buffer.real_cursor.line += 1;
-        } else {
-            // TODO: Go to the end
-        },
-        .left => if (buffer.real_cursor.column > 1) {
-            buffer.real_cursor.column = @min(buffer.real_cursor.column - 1, buffer.lines.items[buffer.real_cursor.line - 1].items.len + 1);
-        } else {},
         .right => {
-            buffer.real_cursor.column = @min(buffer.real_cursor.column + 1, buffer.lines.items[buffer.real_cursor.line - 1].items.len + 1);
+            if (buffer.cursor_col < buffer.getLineLength(buffer.cursor_line)) {
+                buffer.cursor_col += 1;
+            } else if (buffer.cursor_line < buffer.getLineCount() - 1) {
+                buffer.cursor_line += 1;
+                buffer.cursor_col = 0;
+            }
+            buffer.preferred_col = buffer.cursor_col;
+        },
+        .up => {
+            if (buffer.cursor_line > 0) {
+                buffer.cursor_line -= 1;
+                buffer.cursor_col = @min(buffer.preferred_col, buffer.getLineLength(buffer.cursor_line));
+            } else {
+                // TODO: Go to the beginning
+            }
+        },
+        .down => {
+            if (buffer.cursor_line < buffer.getLineCount() - 1) {
+                buffer.cursor_line += 1;
+                buffer.cursor_col = @min(buffer.preferred_col, buffer.getLineLength(buffer.cursor_line));
+            } else {
+                // TODO: Go to the end
+            }
         },
     }
 }
 
-pub fn goToLine(buffer: *Buffer, line: usize) void {
-    buffer.real_cursor.line = @min(@max(line, 1), buffer.lines.items.len);
+pub fn moveCursorToLine(buffer: *Buffer, line: usize) void {
+    buffer.cursor_line = line;
+    buffer.cursor_col = @min(buffer.preferred_col, buffer.getLineLength(buffer.cursor_line));
+}
+
+pub fn moveCursorToLineStart(buffer: *Buffer) void {
+    buffer.cursor_col = 0;
+    buffer.preferred_col = buffer.cursor_col;
+}
+
+pub fn moveCursorToLineEnd(buffer: *Buffer) void {
+    buffer.cursor_col = buffer.getLineLength(buffer.cursor_line);
+    buffer.preferred_col = buffer.cursor_col;
+}
+
+pub fn getCursorPosition(buffer: *Buffer) !usize {
+    var position: usize = 0;
+    var current_line: usize = 0;
+
+    while (current_line < buffer.cursor_line) {
+        position += buffer.getLineLength(current_line);
+
+        if (current_line < buffer.getLineCount() - 1) {
+            position += 1;
+        }
+
+        current_line += 1;
+    }
+
+    position += buffer.cursor_col;
+
+    return position;
+}
+
+pub fn getLineCount(buffer: *Buffer) usize {
+    var count: usize = 1;
+
+    for (0..buffer.content.getLen()) |i| {
+        if (buffer.content.getAt(i) == '\n') {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+pub fn getLineLength(buffer: *Buffer, line: usize) usize {
+    var current_line: usize = 0;
+    var line_start: usize = 0;
+
+    {
+        var i: usize = 0;
+        while (i < buffer.content.getLen() and current_line < line) : (i += 1) {
+            if (buffer.content.getAt(i) == '\n') {
+                current_line += 1;
+                line_start = i + 1;
+            }
+        }
+    }
+
+    var len: usize = 0;
+    for (line_start..buffer.content.getLen()) |i| {
+        const char = buffer.content.getAt(i) orelse break;
+        if (char == '\n') break;
+        len += 1;
+    }
+
+    return len;
+}
+
+pub fn getLine(buffer: *Buffer, line: usize, allocator: std.mem.Allocator) ![]u8 {
+    var current_line: usize = 0;
+    var line_start: usize = 0;
+
+    {
+        var i: usize = 0;
+        while (i < buffer.content.getLen() and current_line < line) : (i += 1) {
+            if (buffer.content.getAt(i) == '\n') {
+                current_line += 1;
+                line_start = i + 1;
+            }
+        }
+    }
+
+    var line_content: std.ArrayList(u8) = .init(allocator);
+    for (line_start..buffer.content.getLen()) |i| {
+        const char = buffer.content.getAt(i) orelse break;
+        if (char == '\n') break;
+        try line_content.append(char);
+    }
+
+    return line_content.toOwnedSlice();
+}
+
+pub fn getAllContent(buffer: *Buffer, allocator: std.mem.Allocator) ![]u8 {
+    var content = std.ArrayList(u8).init(allocator);
+    for (0..buffer.content.getLen()) |i| {
+        const char = buffer.content.getAt(i) orelse break;
+        try content.append(char);
+    }
+
+    return content.toOwnedSlice();
+}
+
+pub fn undo(buffer: *Buffer) !void {
+    if (buffer.undo_stack.items.len == 0) return;
+
+    const action = buffer.undo_stack.pop().?;
+
+    switch (action) {
+        .insert => |insert| {
+            buffer.content.moveGapTo(insert.position);
+
+            for (0..insert.text.len) |_| {
+                buffer.content.deleteForwards();
+            }
+        },
+        .delete => |delete| {
+            buffer.content.moveGapTo(delete.position);
+            try buffer.content.insertSlice(delete.text);
+        },
+        .replace => |replace| {
+            buffer.content.moveGapTo(replace.position);
+            for (0..replace.new_text.len) |_| {
+                buffer.content.deleteForwards();
+            }
+
+            try buffer.content.insertSlice(replace.old_text);
+        },
+    }
+
+    try buffer.redo_stack.append(buffer.allocator, action);
+
+    try buffer.updateCursorFromPosition(switch (action) {
+        inline else => |a| @field(a, "position"),
+    });
+}
+
+pub fn redo(buffer: *Buffer) !void {
+    if (buffer.redo_stack.items.len == 0) return;
+
+    const action = buffer.redo_stack.pop().?;
+
+    switch (action) {
+        .insert => |insert| {
+            buffer.content.moveGapTo(insert.position);
+            try buffer.content.insertSlice(insert.text);
+        },
+        .delete => |delete| {
+            buffer.content.moveGapTo(delete.position);
+
+            for (0..delete.text.len) |_| {
+                buffer.content.deleteForwards();
+            }
+        },
+        .replace => |replace| {
+            buffer.content.moveGapTo(replace.position);
+            for (0..replace.old_text.len) |_| {
+                buffer.content.deleteForwards();
+            }
+
+            try buffer.content.insertSlice(replace.new_text);
+        },
+    }
+
+    try buffer.undo_stack.append(buffer.allocator, action);
+
+    try buffer.updateCursorFromPosition(switch (action) {
+        .insert => |insert| insert.position + insert.text.len,
+        .delete => |delete| delete.position,
+        .replace => |replace| replace.position + replace.new_text.len,
+    });
+}
+
+fn recordUndoAction(buffer: *Buffer, action: UndoAction) !void {
+    try buffer.undo_stack.append(buffer.allocator, action);
+
+    for (buffer.redo_stack.items) |redo_action| {
+        redo_action.deinit(buffer.allocator);
+    }
+
+    buffer.redo_stack.clearRetainingCapacity();
+}
+
+fn updateCursorFromPosition(buffer: *Buffer, position: usize) !void {
+    var line: usize = 0;
+    var col: usize = 0;
+
+    for (0..@min(position, buffer.content.getLen())) |i| {
+        const char = buffer.content.getAt(i) orelse break;
+        if (char == '\n') {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+
+    buffer.cursor_line = line;
+    buffer.cursor_col = col;
+    buffer.preferred_col = col;
+}
+
+pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Position {
+    var arena = std.heap.ArenaAllocator.init(buffer.allocator);
+    defer arena.deinit();
+    for (0..buffer.getLineCount()) |i| {
+        const line = try buffer.getLine(i, arena.allocator());
+        try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + i });
+        try tty.writer().writeAll(line);
+        try tty.writer().writeByteNTimes(' ', viewport.width - line.len);
+    }
+    return .{ .x = viewport.x + buffer.cursor_col, .y = viewport.y + buffer.cursor_line };
 }
 
 pub fn save(buffer: *Buffer) !bool {
-    if (buffer.destination) |destination| {
-        const is_new = std.meta.isError(std.fs.cwd().access(destination, .{}));
-        const file = std.fs.cwd().createFile(destination, .{}) catch return error.FileOpenError;
-        defer file.close();
-        for (buffer.lines.items) |line| {
-            file.writer().writeAll(line.items) catch return error.FileWriteError;
-            file.writer().writeByte('\n') catch return error.FileWriteError;
-        }
-
-        return is_new;
-    } else {
-        return error.NoDestination;
-    }
-}
-
-pub fn render(buffer: Buffer, tty: *Tty, viewport: Editor.Viewport) !Tty.Position {
-    // TODO: Adjust scroll
-
-    const num_size = @max(std.math.log10(buffer.lines.items.len) + 2, 6);
-    for (0..viewport.height) |i| {
-        const line_number = i + 1; // TODO: Scroll
-        if (line_number <= buffer.lines.items.len) {
-            try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + i });
-            try tty.writer().print("{d:>[1]} ", .{ line_number, num_size - 1 });
-            try tty.writer().writeAll(buffer.lines.items[line_number - 1].items);
-            try tty.writer().writeByteNTimes(' ', viewport.width - num_size - buffer.lines.items[line_number - 1].items.len);
-        } else {
-            try tty.writer().writeByteNTimes(' ', viewport.width);
-        }
-    }
-
-    return .{ .x = viewport.x + num_size + buffer.visualCursor().column - 1, .y = viewport.y + buffer.visualCursor().line - 1 }; // TODO: Scroll
+    // TODO
+    buffer.is_dirty = false;
+    return false;
 }
