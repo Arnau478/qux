@@ -462,6 +462,9 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
     var arena = std.heap.ArenaAllocator.init(buffer.allocator);
     defer arena.deinit();
 
+    const content = try buffer.getAllContent(arena.allocator());
+
+    // Syntax highlighting
     if (buffer.tree_sitter_filetype != buffer.filetype) {
         buffer.tree_sitter_filetype = buffer.filetype;
         if (buffer.filetype) |filetype| {
@@ -471,7 +474,6 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
         }
     }
 
-    const content = try buffer.getAllContent(arena.allocator());
     buffer.tree_sitter_tree = buffer.tree_sitter_parser.parseString(content, null).?; // TODO: Incremental parsing
 
     const tree_sitter_query_cursor = cursor: {
@@ -496,18 +498,41 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
         }
     }
 
-    buffer.scrollToLine(buffer.cursor_line, viewport.height);
+    // Render lines
+    const number_col_size = @max(std.math.log10(buffer.getLineCount() + 1) + 1, 3) + 1;
 
-    const number_col_size = @max(std.math.log10(buffer.getLineCount()) + 1, 3) + 1;
+    const fully_visible_line_count = count: {
+        var display_offset: usize = 0;
+        var line_number: usize = buffer.scroll;
+        while (display_offset < viewport.height) : (line_number += 1) {
+            display_offset += std.math.divCeil(usize, @max(buffer.getLineLength(line_number), 1), viewport.width - number_col_size) catch @panic("TODO");
+        }
+        if (display_offset > viewport.height) {
+            line_number -= 1;
+        }
+        break :count line_number - buffer.scroll;
+    };
+
+    std.log.debug("{}", .{fully_visible_line_count});
+
+    buffer.scrollToLine(buffer.cursor_line, fully_visible_line_count);
 
     var current_line_display_offset: usize = 0;
-    while (currrent_line_display_offset < viewport.height) |i| {
-        const line_number = i + buffer.scroll;
-
-        try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + i });
-        if (line_number < buffer.getLineCount()) {
-            const line_height = try renderLine();
-
+    var current_line_number = buffer.scroll;
+    var cursor_display_pos: ?Tty.Position = null;
+    while (current_line_display_offset < viewport.height) : (current_line_number += 1) {
+        if (current_line_number < buffer.getLineCount()) {
+            if (current_line_number == buffer.cursor_line) {
+                std.debug.assert(cursor_display_pos == null);
+                cursor_display_pos = .{
+                    .x = viewport.x + number_col_size + buffer.cursor_col % (viewport.width - number_col_size),
+                    .y = viewport.y + current_line_display_offset + buffer.cursor_col / (viewport.width - number_col_size),
+                };
+            }
+            const line_height_limit = viewport.height - current_line_display_offset;
+            const line_height = try buffer.renderLine(&arena, tty, viewport, theme, current_line_number, current_line_display_offset, tree_sitter_captures.items, number_col_size, line_height_limit);
+            std.debug.assert(line_height >= 1);
+            current_line_display_offset += line_height;
         } else {
             try tty.setAttributes(theme.number_column);
             try tty.writer().writeByteNTimes(' ', number_col_size);
@@ -515,57 +540,91 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
             try tty.writer().writeByte('~');
             try tty.setAttributes(.{ .bg = theme.background });
             try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - 1);
+            current_line_display_offset += 1;
         }
     }
 
-    return .{
-        .x = viewport.x + number_col_size + buffer.cursor_col,
-        .y = viewport.y + buffer.cursor_line - buffer.scroll,
-    };
+    return cursor_display_pos.?;
 }
 
-fn renderLine(buffer: *Buffer, arena: std.heap.ArenaAllocator, tty: *Tty, viewport: Editor.Viewport, theme: Editor.Theme, line_number: usize, display_offset: usize) !usize {
-            const line_start_pos = buffer.getLineStartPos(line_number);
-            const line_content = try buffer.getLine(line_number, arena.allocator());
+fn renderLine(buffer: *Buffer, arena: *std.heap.ArenaAllocator, tty: *Tty, viewport: Editor.Viewport, theme: Editor.Theme, line_number: usize, line_display_offset: usize, tree_sitter_captures: []const tree_sitter.Query.Capture, number_col_size: usize, line_height_limit: usize) !usize {
+    std.debug.assert(line_height_limit >= 1);
 
-            const line_highlight_types = try arena.allocator().alloc(?syntax.HighlightType, line_content.len);
-            @memset(line_highlight_types, null);
-            for (tree_sitter_captures.items) |capture| {
-                const name = buffer.filetype.?.treeSitterQuery().captureNameForId(capture.index).?;
-                if (capture.node.endByte() <= line_start_pos) continue;
-                if (capture.node.startByte() >= line_start_pos + line_content.len) continue;
+    const line_start_pos = buffer.getLineStartPos(line_number);
+    const line_content = try buffer.getLine(line_number, arena.allocator());
 
-                const start = @max(capture.node.startByte(), line_start_pos);
-                const end = @min(capture.node.endByte(), line_start_pos + line_content.len);
+    // Syntax highlighting
+    const line_highlight_types = try arena.allocator().alloc(?syntax.HighlightType, line_content.len);
+    @memset(line_highlight_types, null);
+    for (tree_sitter_captures) |capture| {
+        const name = buffer.filetype.?.treeSitterQuery().captureNameForId(capture.index).?;
+        if (capture.node.endByte() <= line_start_pos) continue;
+        if (capture.node.startByte() >= line_start_pos + line_content.len) continue;
 
-                std.log.debug("name={s} start={} end={}", .{ name, start, end });
+        const start = @max(capture.node.startByte(), line_start_pos);
+        const end = @min(capture.node.endByte(), line_start_pos + line_content.len);
 
-                for (line_highlight_types[start - line_start_pos .. end - line_start_pos]) |*t| {
-                    if (syntax.HighlightType.fromTreeSitterCapture(name)) |highlight_type| {
-                        if (t.* == null or t.*.?.compareSpecificity(highlight_type) == .lt) {
-                            t.* = syntax.HighlightType.fromTreeSitterCapture(name);
-                        }
-                    } else {
-                        std.log.warn("Unknown tree sitter capture: @{s}", .{name});
-                        break;
-                    }
+        for (line_highlight_types[start - line_start_pos .. end - line_start_pos]) |*t| {
+            if (syntax.HighlightType.fromTreeSitterCapture(name)) |highlight_type| {
+                if (t.* == null or t.*.?.compareSpecificity(highlight_type) == .lt) {
+                    t.* = syntax.HighlightType.fromTreeSitterCapture(name);
                 }
-            }
-
-            if (line_number == buffer.cursor_line) {
-                try tty.setAttributes(theme.number_column_current);
             } else {
-                try tty.setAttributes(theme.number_column);
+                std.log.warn("Unknown tree sitter capture: @{s}", .{name});
+                break;
             }
+        }
+    }
+
+    // Render the line
+    var visual_line_idx: usize = 0;
+    var window_iter = std.mem.window(u8, line_content, viewport.width - number_col_size, viewport.width - number_col_size);
+    var highlight_types_window_iter = std.mem.window(?syntax.HighlightType, line_highlight_types, viewport.width - number_col_size, viewport.width - number_col_size);
+    while (window_iter.next()) |visual_line| : (visual_line_idx += 1) {
+        std.debug.assert(visual_line_idx <= line_height_limit);
+        if (visual_line_idx == line_height_limit) {
+            const continue_indicator = ">";
+            try tty.moveCursor(.{
+                .x = viewport.x + viewport.width - continue_indicator.len,
+                .y = viewport.y + line_display_offset + (visual_line_idx - 1),
+            });
+            try tty.setAttributes(theme.line_continue_indicator);
+            try tty.writer().writeAll(continue_indicator);
+            break;
+        }
+
+        const visual_line_highlight_types = highlight_types_window_iter.next().?;
+        const display_offset = line_display_offset + visual_line_idx;
+
+        try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + display_offset });
+
+        if (line_number == buffer.cursor_line and visual_line_idx == 0) {
+            try tty.setAttributes(theme.number_column_current);
+        } else {
+            try tty.setAttributes(theme.number_column);
+        }
+
+        if (visual_line_idx == 0) {
             try tty.writer().print("{d:>[1]} ", .{ line_number + 1, number_col_size - 1 });
-            for (line_content, line_highlight_types) |char, line_highlight_type| {
-                var code_attributes: Tty.Attributes = if (line_highlight_type) |t| t.getAttributes(theme) else .{};
-                if (code_attributes.bg == null) code_attributes.bg = theme.background;
-                try tty.setAttributes(code_attributes);
-                try tty.writer().writeByte(char);
-            }
-            try tty.setAttributes(.{ .bg = theme.background });
-            try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - line_content.len);
+        } else {
+            const digit_len = std.math.log10(line_number + 1) + 1;
+            try tty.writer().writeByteNTimes(' ', number_col_size - digit_len - 1);
+            try tty.writer().writeByteNTimes('>', digit_len);
+            try tty.writer().writeByte(' ');
+        }
+
+        for (visual_line, visual_line_highlight_types) |char, highlight_type| {
+            var code_attributes: Tty.Attributes = if (highlight_type) |t| t.getAttributes(theme) else .{};
+            if (code_attributes.bg == null) code_attributes.bg = theme.background;
+            try tty.setAttributes(code_attributes);
+            try tty.writer().writeByte(char);
+        }
+
+        try tty.setAttributes(.{ .bg = theme.background });
+        try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - visual_line.len);
+    }
+
+    return visual_line_idx;
 }
 
 pub fn save(buffer: *Buffer) !bool {

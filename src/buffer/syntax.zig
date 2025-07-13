@@ -106,7 +106,7 @@ pub const HighlightType = enum {
             .variable
         else if (std.mem.eql(u8, name, "function"))
             .function
-        else if (std.mem.eql(u8, name, "type"))
+        else if (std.mem.eql(u8, name, "type.builtin"))
             .type
         else if (std.mem.eql(u8, name, "keyword") or std.mem.startsWith(u8, name, "keyword."))
             .keyword
