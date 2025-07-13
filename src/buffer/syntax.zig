@@ -1,6 +1,8 @@
 const std = @import("std");
 const tree_sitter = @import("tree_sitter");
 const tree_sitter_query_sources = @import("tree_sitter_query_sources");
+const Editor = @import("../Editor.zig");
+const Tty = @import("../Tty.zig");
 
 const tree_sitter_grammars = struct {
     extern fn tree_sitter_c() callconv(.c) *tree_sitter.Language;
@@ -69,5 +71,46 @@ pub const Filetype = enum {
         _ = content;
 
         return null;
+    }
+};
+
+pub const HighlightType = enum {
+    comment,
+    string,
+    variable,
+    function,
+    type,
+    keyword,
+
+    pub fn compareSpecificity(a: HighlightType, b: HighlightType) std.math.Order {
+        return std.math.order(@intFromEnum(a), @intFromEnum(b));
+    }
+
+    pub fn getAttributes(highlight_type: HighlightType, theme: Editor.Theme) Tty.Attributes {
+        return switch (highlight_type) {
+            .comment => theme.syntax.comment,
+            .string => theme.syntax.string,
+            .variable => theme.syntax.variable,
+            .function => theme.syntax.function,
+            .type => theme.syntax.type,
+            .keyword => theme.syntax.keyword,
+        };
+    }
+
+    pub fn fromTreeSitterCapture(name: []const u8) ?HighlightType {
+        return if (std.mem.eql(u8, name, "comment"))
+            .comment
+        else if (std.mem.eql(u8, name, "string"))
+            .string
+        else if (std.mem.eql(u8, name, "variable"))
+            .variable
+        else if (std.mem.eql(u8, name, "function"))
+            .function
+        else if (std.mem.eql(u8, name, "type"))
+            .type
+        else if (std.mem.eql(u8, name, "keyword") or std.mem.startsWith(u8, name, "keyword."))
+            .keyword
+        else
+            null;
     }
 };

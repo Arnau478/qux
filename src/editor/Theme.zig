@@ -17,6 +17,10 @@ pub const default: Theme = .{
     .syntax = .{
         .comment = .{ .fg = .{ .standard = .bright_black } },
         .string = .{ .fg = .{ .standard = .green } },
+        .variable = .{},
+        .function = .{ .fg = .{ .standard = .blue } },
+        .type = .{ .fg = .{ .standard = .cyan } },
+        .keyword = .{ .fg = .{ .standard = .magenta } },
     },
 };
 
@@ -37,6 +41,10 @@ pub const kanagawa: Theme = .{
     .syntax = .{
         .comment = .{ .fg = .{ .rgb = .{ .r = 0x72, .g = 0x71, .b = 0x69 } }, .italic = true },
         .string = .{ .fg = .{ .rgb = .{ .r = 0x98, .g = 0xbb, .b = 0x6c } } },
+        .variable = .{ .fg = .{ .rgb = .{ .r = 0xdc, .g = 0xd7, .b = 0xba } } },
+        .function = .{ .fg = .{ .rgb = .{ .r = 0x7e, .g = 0x9c, .b = 0xd8 } } },
+        .type = .{ .fg = .{ .rgb = .{ .r = 0x7a, .g = 0xa8, .b = 0x9f } } },
+        .keyword = .{ .fg = .{ .rgb = .{ .r = 0x95, .g = 0x7f, .b = 0xb8 } }, .italic = true },
     },
 };
 
@@ -55,4 +63,8 @@ mode: struct {
 syntax: struct {
     comment: Tty.Attributes,
     string: Tty.Attributes,
+    variable: Tty.Attributes,
+    function: Tty.Attributes,
+    type: Tty.Attributes,
+    keyword: Tty.Attributes,
 },

@@ -458,18 +458,6 @@ fn scrollToLine(buffer: *Buffer, line: usize, height: usize) void {
     buffer.scroll = @max(buffer.scroll + (height - 1), line) - (height - 1);
 }
 
-pub const HighlightType = enum {
-    comment,
-    string,
-
-    pub fn getAttributes(highlight_type: HighlightType, theme: Editor.Theme) Tty.Attributes {
-        return switch (highlight_type) {
-            .comment => theme.syntax.comment,
-            .string => theme.syntax.string,
-        };
-    }
-};
-
 pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Editor.Theme) !Tty.Position {
     var arena = std.heap.ArenaAllocator.init(buffer.allocator);
     defer arena.deinit();
@@ -512,15 +500,35 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
 
     const number_col_size = @max(std.math.log10(buffer.getLineCount()) + 1, 3) + 1;
 
-    for (0..viewport.height) |i| {
+    var current_line_display_offset: usize = 0;
+    while (currrent_line_display_offset < viewport.height) |i| {
         const line_number = i + buffer.scroll;
-        const line_content = try buffer.getLine(line_number, arena.allocator());
 
         try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + i });
         if (line_number < buffer.getLineCount()) {
-            const line_start_pos = buffer.getLineStartPos(line_number);
+            const line_height = try renderLine();
 
-            const line_highlight_types = try arena.allocator().alloc(?HighlightType, line_content.len);
+        } else {
+            try tty.setAttributes(theme.number_column);
+            try tty.writer().writeByteNTimes(' ', number_col_size);
+            try tty.setAttributes(.{ .bg = theme.background, .fg = theme.line_placeholder });
+            try tty.writer().writeByte('~');
+            try tty.setAttributes(.{ .bg = theme.background });
+            try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - 1);
+        }
+    }
+
+    return .{
+        .x = viewport.x + number_col_size + buffer.cursor_col,
+        .y = viewport.y + buffer.cursor_line - buffer.scroll,
+    };
+}
+
+fn renderLine(buffer: *Buffer, arena: std.heap.ArenaAllocator, tty: *Tty, viewport: Editor.Viewport, theme: Editor.Theme, line_number: usize, display_offset: usize) !usize {
+            const line_start_pos = buffer.getLineStartPos(line_number);
+            const line_content = try buffer.getLine(line_number, arena.allocator());
+
+            const line_highlight_types = try arena.allocator().alloc(?syntax.HighlightType, line_content.len);
             @memset(line_highlight_types, null);
             for (tree_sitter_captures.items) |capture| {
                 const name = buffer.filetype.?.treeSitterQuery().captureNameForId(capture.index).?;
@@ -530,17 +538,16 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
                 const start = @max(capture.node.startByte(), line_start_pos);
                 const end = @min(capture.node.endByte(), line_start_pos + line_content.len);
 
+                std.log.debug("name={s} start={} end={}", .{ name, start, end });
+
                 for (line_highlight_types[start - line_start_pos .. end - line_start_pos]) |*t| {
-                    if (t.* == null) {
-                        const highlight_type: ?HighlightType = if (std.mem.eql(u8, name, "comment"))
-                            .comment
-                        else if (std.mem.eql(u8, name, "string"))
-                            .string
-                        else blk: {
-                            std.log.warn("Unknown tree sitter capture: @{s}", .{name});
-                            break :blk null;
-                        };
-                        t.* = highlight_type;
+                    if (syntax.HighlightType.fromTreeSitterCapture(name)) |highlight_type| {
+                        if (t.* == null or t.*.?.compareSpecificity(highlight_type) == .lt) {
+                            t.* = syntax.HighlightType.fromTreeSitterCapture(name);
+                        }
+                    } else {
+                        std.log.warn("Unknown tree sitter capture: @{s}", .{name});
+                        break;
                     }
                 }
             }
@@ -559,20 +566,6 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
             }
             try tty.setAttributes(.{ .bg = theme.background });
             try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - line_content.len);
-        } else {
-            try tty.setAttributes(theme.number_column);
-            try tty.writer().writeByteNTimes(' ', number_col_size);
-            try tty.setAttributes(.{ .bg = theme.background, .fg = theme.line_placeholder });
-            try tty.writer().writeByte('~');
-            try tty.setAttributes(.{ .bg = theme.background });
-            try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - 1);
-        }
-    }
-
-    return .{
-        .x = viewport.x + number_col_size + buffer.cursor_col,
-        .y = viewport.y + buffer.cursor_line - buffer.scroll,
-    };
 }
 
 pub fn save(buffer: *Buffer) !bool {
