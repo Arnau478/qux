@@ -9,12 +9,18 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
 
+    const toml_dep = b.dependency("toml", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     exe_mod.addImport("tree_sitter", tree_sitter_dep.module("tree-sitter"));
+    exe_mod.addImport("toml", toml_dep.module("toml"));
 
     var tree_sitter_queries_source = std.ArrayList(u8).init(b.allocator);
     const tree_sitter_queries_mod = b.createModule(.{});

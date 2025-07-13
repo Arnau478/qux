@@ -474,7 +474,7 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
         }
     }
 
-    buffer.tree_sitter_tree = buffer.tree_sitter_parser.parseString(content, null).?; // TODO: Incremental parsing
+    buffer.tree_sitter_tree = buffer.tree_sitter_parser.parseString(content, null); // TODO: Incremental parsing
 
     const tree_sitter_query_cursor = cursor: {
         if (buffer.filetype) |filetype| {
@@ -512,8 +512,6 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
         }
         break :count line_number - buffer.scroll;
     };
-
-    std.log.debug("{}", .{fully_visible_line_count});
 
     buffer.scrollToLine(buffer.cursor_line, fully_visible_line_count);
 

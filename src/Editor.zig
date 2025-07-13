@@ -3,6 +3,7 @@ const Editor = @This();
 const std = @import("std");
 const Tty = @import("Tty.zig");
 const Buffer = @import("Buffer.zig");
+const Config = @import("Config.zig");
 
 pub const Theme = @import("editor/Theme.zig");
 
@@ -49,7 +50,7 @@ notice: ?[]const u8,
 notice_is_error: bool,
 theme: Theme,
 
-pub fn init(allocator: std.mem.Allocator, tty: *Tty, initial_buffer_destinations: []const []const u8) !Editor {
+pub fn init(allocator: std.mem.Allocator, config: Config.Editor, tty: *Tty, initial_buffer_destinations: []const []const u8) !Editor {
     var editor: Editor = .{
         .allocator = allocator,
         .tty = tty,
@@ -58,7 +59,7 @@ pub fn init(allocator: std.mem.Allocator, tty: *Tty, initial_buffer_destinations
         .current_buffer_idx = 0,
         .notice = null,
         .notice_is_error = false,
-        .theme = Theme.default,
+        .theme = Theme.byName(config.theme) orelse .default_builtin,
     };
 
     if (initial_buffer_destinations.len == 0) {
@@ -232,15 +233,16 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
 
         if (is_new) try editor.setNotice(false, "Created file \"{s}\"", .{editor.currentBuffer().destination.?});
     } else if (std.mem.eql(u8, name, "theme")) {
-        const theme_name = iter.next() orelse return; // TODO
-        if (iter.peek() != null) return; // TODO
+        if (iter.next()) |theme_name| {
+            if (iter.peek() != null) return; // TODO
 
-        if (std.mem.eql(u8, theme_name, "default")) {
-            editor.theme = .default;
-        } else if (std.mem.eql(u8, theme_name, "kanagawa")) {
-            editor.theme = .kanagawa;
+            if (Theme.byName(theme_name)) |theme| {
+                editor.theme = theme;
+            } else {
+                try editor.setNotice(true, "No theme named \"{s}\"", .{theme_name});
+            }
         } else {
-            try editor.setNotice(true, "No theme named \"{s}\"", .{theme_name});
+            // TODO
         }
     } else if (std.mem.eql(u8, name, "filetype")) {
         if (iter.next()) |filetype_str| {
