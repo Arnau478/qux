@@ -493,6 +493,7 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
     var tree_sitter_captures = std.ArrayList(tree_sitter.Query.Capture).init(arena.allocator());
     if (tree_sitter_query_cursor) |cursor| {
         while (cursor.nextCapture()) |next_capture| {
+            if (buffer.filetype.?.treeSitterQuery().predicatesForPattern(next_capture[1].pattern_index).len > 0) continue; // TODO
             const capture = next_capture[1].captures[next_capture[0]];
             try tree_sitter_captures.append(capture);
         }

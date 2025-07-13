@@ -32,11 +32,15 @@ pub const builtin = struct {
         },
         .syntax = .{
             .comment = .{ .fg = .{ .standard = .bright_black } },
+            .character = .{ .fg = .{ .standard = .green } },
             .string = .{ .fg = .{ .standard = .green } },
             .variable = .{},
             .function = .{ .fg = .{ .standard = .blue } },
             .type = .{ .fg = .{ .standard = .cyan } },
+            .number = .{ .fg = .{ .standard = .magenta } },
+            .operator = .{},
             .keyword = .{ .fg = .{ .standard = .magenta } },
+            .boolean = .{ .fg = .{ .standard = .yellow } },
         },
     };
 
@@ -57,11 +61,15 @@ pub const builtin = struct {
         },
         .syntax = .{
             .comment = .{ .fg = .{ .rgb = .{ .r = 0x72, .g = 0x71, .b = 0x69 } }, .italic = true },
+            .character = .{ .fg = .{ .rgb = .{ .r = 0x98, .g = 0xbb, .b = 0x6c } } },
             .string = .{ .fg = .{ .rgb = .{ .r = 0x98, .g = 0xbb, .b = 0x6c } } },
             .variable = .{ .fg = .{ .rgb = .{ .r = 0xdc, .g = 0xd7, .b = 0xba } } },
             .function = .{ .fg = .{ .rgb = .{ .r = 0x7e, .g = 0x9c, .b = 0xd8 } } },
             .type = .{ .fg = .{ .rgb = .{ .r = 0x7a, .g = 0xa8, .b = 0x9f } } },
+            .number = .{ .fg = .{ .rgb = .{ .r = 0xd2, .g = 0x7e, .b = 0x99 } } },
+            .operator = .{ .fg = .{ .rgb = .{ .r = 0xc0, .g = 0xa3, .b = 0x6e } } },
             .keyword = .{ .fg = .{ .rgb = .{ .r = 0x95, .g = 0x7f, .b = 0xb8 } }, .italic = true },
+            .boolean = .{ .fg = .{ .rgb = .{ .r = 0xff, .g = 0xa0, .b = 0x66 } }, .bold = true },
         },
     };
 };
@@ -81,9 +89,13 @@ mode: struct {
 },
 syntax: struct {
     comment: Tty.Attributes,
+    character: Tty.Attributes,
     string: Tty.Attributes,
     variable: Tty.Attributes,
     function: Tty.Attributes,
     type: Tty.Attributes,
+    number: Tty.Attributes,
+    operator: Tty.Attributes,
     keyword: Tty.Attributes,
+    boolean: Tty.Attributes,
 },

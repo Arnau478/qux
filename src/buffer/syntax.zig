@@ -76,11 +76,15 @@ pub const Filetype = enum {
 
 pub const HighlightType = enum {
     comment,
+    character,
     string,
     variable,
     function,
     type,
+    number,
+    operator,
     keyword,
+    boolean,
 
     pub fn compareSpecificity(a: HighlightType, b: HighlightType) std.math.Order {
         return std.math.order(@intFromEnum(a), @intFromEnum(b));
@@ -88,29 +92,28 @@ pub const HighlightType = enum {
 
     pub fn getAttributes(highlight_type: HighlightType, theme: Editor.Theme) Tty.Attributes {
         return switch (highlight_type) {
-            .comment => theme.syntax.comment,
-            .string => theme.syntax.string,
-            .variable => theme.syntax.variable,
-            .function => theme.syntax.function,
-            .type => theme.syntax.type,
-            .keyword => theme.syntax.keyword,
+            inline else => |t| @field(theme.syntax, @tagName(t)),
         };
     }
 
     pub fn fromTreeSitterCapture(name: []const u8) ?HighlightType {
-        return if (std.mem.eql(u8, name, "comment"))
-            .comment
-        else if (std.mem.eql(u8, name, "string"))
-            .string
-        else if (std.mem.eql(u8, name, "variable"))
-            .variable
-        else if (std.mem.eql(u8, name, "function"))
-            .function
-        else if (std.mem.eql(u8, name, "type.builtin"))
-            .type
-        else if (std.mem.eql(u8, name, "keyword") or std.mem.startsWith(u8, name, "keyword."))
-            .keyword
-        else
-            null;
+        inline for (comptime std.enums.values(HighlightType)) |highlight_type| {
+            const base_name = switch (highlight_type) {
+                .comment => "comment",
+                .character => "character",
+                .string => "string",
+                .variable => "variable",
+                .function => "function",
+                .type => "type",
+                .number => "number",
+                .operator => "operator",
+                .keyword => "keyword",
+                .boolean => "boolean",
+            };
+
+            if (std.mem.eql(u8, name, base_name) or std.mem.startsWith(u8, name, base_name ++ ".")) return highlight_type;
+        }
+
+        return null;
     }
 };
