@@ -245,7 +245,7 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
     } else if (std.mem.eql(u8, name, "filetype")) {
         if (iter.next()) |filetype_str| {
             if (iter.peek() != null) return; // TODO
-            if (std.meta.stringToEnum(Buffer.Filetype, filetype_str)) |filetype| {
+            if (std.meta.stringToEnum(Buffer.syntax.Filetype, filetype_str)) |filetype| {
                 editor.currentBuffer().filetype = filetype;
             } else {
                 try editor.setNotice(true, "Unknown filetype: {s}", .{filetype_str});

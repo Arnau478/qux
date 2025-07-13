@@ -2,10 +2,11 @@ const Buffer = @This();
 
 const std = @import("std");
 const tree_sitter = @import("tree_sitter");
-const tree_sitter_query_sources = @import("tree_sitter_query_sources");
 const Editor = @import("Editor.zig");
 const Tty = @import("Tty.zig");
-const GapBuffer = @import("gap_buffer.zig").GapBuffer;
+const GapBuffer = @import("buffer/gap_buffer.zig").GapBuffer;
+
+pub const syntax = @import("buffer/syntax.zig");
 
 allocator: std.mem.Allocator,
 content: GapBuffer(u8),
@@ -18,64 +19,10 @@ preferred_col: usize,
 scroll: usize,
 undo_stack: std.ArrayListUnmanaged(UndoAction),
 redo_stack: std.ArrayListUnmanaged(UndoAction),
-filetype: ?Filetype,
-tree_sitter_filetype: ?Filetype,
+filetype: ?syntax.Filetype,
+tree_sitter_filetype: ?syntax.Filetype,
 tree_sitter_parser: *tree_sitter.Parser,
 tree_sitter_tree: ?*tree_sitter.Tree,
-
-const tree_sitter_grammars = struct {
-    extern fn tree_sitter_c() callconv(.c) *tree_sitter.Language;
-    extern fn tree_sitter_zig() callconv(.c) *tree_sitter.Language;
-};
-
-var tree_sitter_query_cache: std.enums.EnumFieldStruct(Filetype, ?*tree_sitter.Query, @as(?*tree_sitter.Query, null)) = .{};
-
-pub const Filetype = enum {
-    c,
-    zig,
-
-    fn treeSitterName(filetype: Filetype) []const u8 {
-        return switch (filetype) {
-            .c => "c",
-            .zig => "zig",
-        };
-    }
-
-    pub fn treeSitterGrammar(filetype: Filetype) *const fn () callconv(.c) *tree_sitter.Language {
-        switch (filetype) {
-            inline else => |t| {
-                const name = comptime treeSitterName(t);
-                return @field(tree_sitter_grammars, std.fmt.comptimePrint("tree_sitter_{s}", .{name}));
-            },
-        }
-    }
-
-    pub fn treeSitterQuerySource(filetype: Filetype) []const u8 {
-        switch (filetype) {
-            inline else => |t| {
-                const name = comptime treeSitterName(t);
-                return @field(tree_sitter_query_sources, name);
-            },
-        }
-    }
-
-    pub fn treeSitterQuery(filetype: Filetype) *tree_sitter.Query {
-        switch (filetype) {
-            inline else => |t| {
-                if (@field(tree_sitter_query_cache, @tagName(t))) |query| {
-                    return query;
-                } else {
-                    var error_offset: u32 = 0;
-                    const query = tree_sitter.Query.create(filetype.treeSitterGrammar()(), filetype.treeSitterQuerySource(), &error_offset) catch @panic("TODO");
-
-                    @field(tree_sitter_query_cache, @tagName(t)) = query;
-
-                    return query;
-                }
-            },
-        }
-    }
-};
 
 pub const UndoAction = union(enum) {
     insert: struct {
@@ -130,7 +77,7 @@ pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer
 
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            buffer.filetype = guessFiletype(file_path, null);
+            buffer.filetype = syntax.Filetype.guess(file_path, null);
 
             return buffer;
         },
@@ -152,7 +99,7 @@ pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer
     try buffer.content.insertSlice(content);
     buffer.dirty = false;
 
-    buffer.filetype = guessFiletype(file_path, content);
+    buffer.filetype = syntax.Filetype.guess(file_path, content);
 
     return buffer;
 }
@@ -651,20 +598,4 @@ pub fn save(buffer: *Buffer) !bool {
     } else {
         return error.NoDestination;
     }
-}
-
-fn guessFiletype(file_path: []const u8, content: ?[]const u8) ?Filetype {
-    const file_name = std.fs.path.basename(file_path);
-
-    if (std.mem.endsWith(u8, file_name, ".c") or std.mem.endsWith(u8, file_name, ".h")) {
-        return .zig;
-    }
-
-    if (std.mem.endsWith(u8, file_name, ".zig") or std.mem.endsWith(u8, file_name, ".zon")) {
-        return .zig;
-    }
-
-    _ = content;
-
-    return null;
 }
