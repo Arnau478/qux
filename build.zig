@@ -4,14 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const tree_sitter_dep = b.dependency("tree_sitter", .{
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-
     const toml_dep = b.dependency("toml", .{
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = optimize,
+    });
+
+    const known_folders_dep = b.dependency("known_folders", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const tree_sitter_dep = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
     });
 
     const exe_mod = b.createModule(.{
@@ -19,8 +24,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe_mod.addImport("tree_sitter", tree_sitter_dep.module("tree-sitter"));
     exe_mod.addImport("toml", toml_dep.module("toml"));
+    exe_mod.addImport("known_folders", known_folders_dep.module("known-folders"));
+    exe_mod.addImport("tree_sitter", tree_sitter_dep.module("tree-sitter"));
 
     var tree_sitter_queries_source = std.ArrayList(u8).init(b.allocator);
     const tree_sitter_queries_mod = b.createModule(.{});
