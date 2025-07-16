@@ -23,8 +23,12 @@ pub const Direction = enum {
 
 pub const Mode = union(enum) {
     normal,
-    insert,
+    insert: Insert,
     command: std.ArrayListUnmanaged(u8),
+
+    pub const Insert = struct {
+        combine_edit_actions: bool = false,
+    };
 
     pub fn displayName(mode: Mode) []const u8 {
         return switch (mode) {
@@ -132,7 +136,7 @@ pub fn run(editor: *Editor) !void {
             .normal => switch (input) {
                 .printable => |printable| switch (printable) {
                     0...31 => unreachable,
-                    'i' => editor.mode = .insert,
+                    'i' => editor.mode = .{ .insert = .{} },
                     ':' => editor.mode = .{ .command = .{} },
                     'u' => try editor.currentBuffer().undo(),
                     'r' => try editor.currentBuffer().redo(),
@@ -143,10 +147,19 @@ pub fn run(editor: *Editor) !void {
                 },
                 else => {},
             },
-            .insert => switch (input) {
-                .printable => |printable| try editor.currentBuffer().insertCharacter(printable, false),
-                .@"return" => try editor.currentBuffer().insertCharacter('\n', false),
-                .backspace => try editor.currentBuffer().deleteBackwards(1, false),
+            .insert => |*insert| switch (input) {
+                .printable => |printable| {
+                    try editor.currentBuffer().insertCharacter(printable, insert.combine_edit_actions);
+                    insert.combine_edit_actions = true;
+                },
+                .@"return" => {
+                    try editor.currentBuffer().insertCharacter('\n', insert.combine_edit_actions);
+                    insert.combine_edit_actions = true;
+                },
+                .backspace => {
+                    try editor.currentBuffer().deleteBackwards(1, insert.combine_edit_actions);
+                    insert.combine_edit_actions = true;
+                },
                 .escape => editor.mode = .normal,
                 .arrow => |arrow| switch (arrow) {
                     inline else => |a| editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),

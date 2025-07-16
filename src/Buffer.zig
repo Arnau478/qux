@@ -43,6 +43,7 @@ pub const Action = union(enum) {
                 for (composite) |a| {
                     a.deinit(allocator);
                 }
+                allocator.free(composite);
             },
         }
     }
@@ -373,11 +374,19 @@ pub fn redo(buffer: *Buffer) !void {
 }
 
 fn doAndRecordAction(buffer: *Buffer, action: Action, combine_action: bool) !void {
-    _ = combine_action; // TODO
-
     try action.do(buffer);
 
-    try buffer.undo_stack.append(buffer.allocator, action);
+    if (combine_action and buffer.undo_stack.items.len != 0) {
+        // TODO: Optimize this
+        buffer.undo_stack.items[buffer.undo_stack.items.len - 1] = .{
+            .composite = try buffer.allocator.dupe(Action, &.{
+                buffer.undo_stack.getLast(),
+                action,
+            }),
+        };
+    } else {
+        try buffer.undo_stack.append(buffer.allocator, action);
+    }
 
     // Clear redo stack
     for (buffer.redo_stack.items) |redo_action| {
