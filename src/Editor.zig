@@ -134,6 +134,8 @@ pub fn run(editor: *Editor) !void {
                     0...31 => unreachable,
                     'i' => editor.mode = .insert,
                     ':' => editor.mode = .{ .command = .{} },
+                    'u' => try editor.currentBuffer().undo(),
+                    'r' => try editor.currentBuffer().redo(),
                     else => {},
                 },
                 .arrow => |arrow| switch (arrow) {
@@ -142,9 +144,9 @@ pub fn run(editor: *Editor) !void {
                 else => {},
             },
             .insert => switch (input) {
-                .printable => |printable| try editor.currentBuffer().insertCharacter(printable),
-                .@"return" => try editor.currentBuffer().insertCharacter('\n'),
-                .backspace => try editor.currentBuffer().backspace(),
+                .printable => |printable| try editor.currentBuffer().insertCharacter(printable, false),
+                .@"return" => try editor.currentBuffer().insertCharacter('\n', false),
+                .backspace => try editor.currentBuffer().deleteBackwards(1, false),
                 .escape => editor.mode = .normal,
                 .arrow => |arrow| switch (arrow) {
                     inline else => |a| editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),

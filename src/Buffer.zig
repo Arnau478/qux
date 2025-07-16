@@ -17,14 +17,14 @@ cursor_line: usize,
 cursor_col: usize,
 preferred_col: usize,
 scroll: usize,
-undo_stack: std.ArrayListUnmanaged(UndoAction),
-redo_stack: std.ArrayListUnmanaged(UndoAction),
+undo_stack: std.ArrayListUnmanaged(Action),
+redo_stack: std.ArrayListUnmanaged(Action),
 filetype: ?syntax.Filetype,
 tree_sitter_filetype: ?syntax.Filetype,
 tree_sitter_parser: *tree_sitter.Parser,
 tree_sitter_tree: ?*tree_sitter.Tree,
 
-pub const UndoAction = union(enum) {
+pub const Action = union(enum) {
     insert: struct {
         position: usize,
         text: []const u8,
@@ -33,19 +33,63 @@ pub const UndoAction = union(enum) {
         position: usize,
         text: []const u8,
     },
-    replace: struct {
-        position: usize,
-        old_text: []const u8,
-        new_text: []const u8,
-    },
+    composite: []Action,
 
-    pub fn deinit(action: UndoAction, allocator: std.mem.Allocator) void {
+    pub fn deinit(action: Action, allocator: std.mem.Allocator) void {
         switch (action) {
             .insert => |insert| allocator.free(insert.text),
             .delete => |delete| allocator.free(delete.text),
-            .replace => |replace| {
-                allocator.free(replace.old_text);
-                allocator.free(replace.new_text);
+            .composite => |composite| {
+                for (composite) |a| {
+                    a.deinit(allocator);
+                }
+            },
+        }
+    }
+
+    // Apply `action` to `buffer`
+    pub fn do(action: Action, buffer: *Buffer) !void {
+        switch (action) {
+            .insert => |insert| {
+                buffer.content.moveGapTo(insert.position);
+                try buffer.content.insertSlice(insert.text);
+
+                try buffer.updateCursorFromPosition(insert.position + insert.text.len);
+            },
+            .delete => |delete| {
+                buffer.content.moveGapTo(delete.position);
+                buffer.content.deleteForwards(delete.text.len);
+
+                try buffer.updateCursorFromPosition(delete.position);
+            },
+            .composite => |composite| {
+                for (composite) |a| {
+                    try a.do(buffer);
+                }
+            },
+        }
+    }
+
+    // Undo `action` from `buffer` (i.e. apply in reverse)
+    pub fn undo(action: Action, buffer: *Buffer) !void {
+        switch (action) {
+            .insert => |insert| {
+                buffer.content.moveGapTo(insert.position);
+                buffer.content.deleteForwards(insert.text.len);
+
+                try buffer.updateCursorFromPosition(insert.position);
+            },
+            .delete => |delete| {
+                buffer.content.moveGapTo(delete.position);
+                try buffer.content.insertSlice(delete.text);
+
+                try buffer.updateCursorFromPosition(delete.position + delete.text.len);
+            },
+            .composite => |composite| {
+                var iter = std.mem.reverseIterator(composite);
+                while (iter.next()) |a| {
+                    try a.undo(buffer);
+                }
             },
         }
     }
@@ -122,102 +166,56 @@ pub fn deinit(buffer: *Buffer) void {
     buffer.tree_sitter_parser.destroy();
 }
 
-pub fn insertCharacter(buffer: *Buffer, char: u8) !void {
-    const position = try buffer.getCursorPosition();
-
-    buffer.content.moveGapTo(position);
-    try buffer.content.insert(char);
-
-    try buffer.recordUndoAction(.{
-        .insert = .{
-            .position = position,
-            .text = try buffer.allocator.dupe(u8, &[_]u8{char}),
-        },
-    });
-
-    if (char == '\n') {
-        buffer.cursor_line += 1;
-        buffer.cursor_col = 0;
-    } else {
-        buffer.cursor_col += 1;
-    }
-    buffer.preferred_col = buffer.cursor_col;
-
-    buffer.dirty = true;
+/// Insert a character `char`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
+pub fn insertCharacter(buffer: *Buffer, char: u8, combine_action: bool) !void {
+    try buffer.insertSlice(&.{char}, combine_action);
 }
 
-pub fn insertSlice(buffer: *Buffer, slice: []const u8) !void {
+/// Insert a slice `slice`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
+pub fn insertSlice(buffer: *Buffer, slice: []const u8, combine_action: bool) !void {
     const position = try buffer.getCursorPosition();
 
-    buffer.content.moveGapTo(position);
-    buffer.content.insertSlice(slice);
-
-    try buffer.recordUndoAction(.{
+    try buffer.doAndRecordAction(.{
         .insert = .{
             .position = position,
             .text = try buffer.allocator.dupe(u8, slice),
         },
-    });
-
-    for (slice) |char| {
-        if (char == '\n') {
-            buffer.cursor_line += 1;
-            buffer.cursor_col = 0;
-        } else {
-            buffer.cursor_col += 1;
-        }
-    }
-    buffer.preferred_col = buffer.cursor_col;
+    }, combine_action);
 
     buffer.dirty = true;
 }
 
-pub fn deleteCharacter(buffer: *Buffer) !void {
-    const position = try buffer.getCursorPosition();
-    if (position >= buffer.content.getLen()) return;
+fn deleteForwardsFromPosition(buffer: *Buffer, position: usize, count: usize, combine_action: bool) !void {
+    const text = try buffer.allocator.alloc(u8, count);
+    errdefer buffer.allocator.free(text);
+    for (text, 0..) |*char, i| {
+        char.* = buffer.content.getAt(position + i).?;
+    }
 
-    const char = buffer.content.getAt(position);
-
-    buffer.content.moveGapTo(position);
-    buffer.content.deleteForwards();
-
-    try buffer.recordUndoAction(.{
+    try buffer.doAndRecordAction(.{
         .delete = .{
             .position = position,
-            .text = try buffer.allocator.dupe(u8, &[_]u8{char}),
+            .text = text,
         },
-    });
+    }, combine_action);
 
     buffer.dirty = true;
 }
 
-pub fn backspace(buffer: *Buffer) !void {
-    if (buffer.cursor_line == 0 and buffer.cursor_col == 0) return;
-
+/// Delete `count` characters forwards. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
+pub fn deleteForwards(buffer: *Buffer, count: usize, combine_action: bool) !void {
     const position = try buffer.getCursorPosition();
-    if (position == 0) return;
+    if (position > buffer.content.getLen() - count) return;
 
-    const char = buffer.content.getAt(position - 1) orelse return;
+    try buffer.deleteForwardsFromPosition(position, count, combine_action);
+}
 
-    buffer.content.moveGapTo(position);
-    buffer.content.deleteBackwards();
+/// Delete `count` characters backwards (backspace-like). If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
+pub fn deleteBackwards(buffer: *Buffer, count: usize, combine_action: bool) !void {
+    const position = try buffer.getCursorPosition();
+    if (position < count) return;
 
-    try buffer.recordUndoAction(.{
-        .delete = .{
-            .position = position - 1,
-            .text = try buffer.allocator.dupe(u8, &[_]u8{char}),
-        },
-    });
-
-    if (char == '\n') {
-        buffer.cursor_line -= 1;
-        buffer.cursor_col = buffer.getLineLength(buffer.cursor_line);
-    } else {
-        buffer.cursor_col -= 1;
-    }
-    buffer.preferred_col = buffer.cursor_col;
-
-    buffer.dirty = true;
+    try buffer.deleteForwardsFromPosition(position - count, count, combine_action);
 }
 
 pub fn moveCursor(buffer: *Buffer, direction: Editor.Direction) void {
@@ -359,33 +357,9 @@ pub fn undo(buffer: *Buffer) !void {
 
     const action = buffer.undo_stack.pop().?;
 
-    switch (action) {
-        .insert => |insert| {
-            buffer.content.moveGapTo(insert.position);
-
-            for (0..insert.text.len) |_| {
-                buffer.content.deleteForwards();
-            }
-        },
-        .delete => |delete| {
-            buffer.content.moveGapTo(delete.position);
-            try buffer.content.insertSlice(delete.text);
-        },
-        .replace => |replace| {
-            buffer.content.moveGapTo(replace.position);
-            for (0..replace.new_text.len) |_| {
-                buffer.content.deleteForwards();
-            }
-
-            try buffer.content.insertSlice(replace.old_text);
-        },
-    }
+    try action.undo(buffer);
 
     try buffer.redo_stack.append(buffer.allocator, action);
-
-    try buffer.updateCursorFromPosition(switch (action) {
-        inline else => |a| @field(a, "position"),
-    });
 }
 
 pub fn redo(buffer: *Buffer) !void {
@@ -393,44 +367,22 @@ pub fn redo(buffer: *Buffer) !void {
 
     const action = buffer.redo_stack.pop().?;
 
-    switch (action) {
-        .insert => |insert| {
-            buffer.content.moveGapTo(insert.position);
-            try buffer.content.insertSlice(insert.text);
-        },
-        .delete => |delete| {
-            buffer.content.moveGapTo(delete.position);
-
-            for (0..delete.text.len) |_| {
-                buffer.content.deleteForwards();
-            }
-        },
-        .replace => |replace| {
-            buffer.content.moveGapTo(replace.position);
-            for (0..replace.old_text.len) |_| {
-                buffer.content.deleteForwards();
-            }
-
-            try buffer.content.insertSlice(replace.new_text);
-        },
-    }
+    try action.do(buffer);
 
     try buffer.undo_stack.append(buffer.allocator, action);
-
-    try buffer.updateCursorFromPosition(switch (action) {
-        .insert => |insert| insert.position + insert.text.len,
-        .delete => |delete| delete.position,
-        .replace => |replace| replace.position + replace.new_text.len,
-    });
 }
 
-fn recordUndoAction(buffer: *Buffer, action: UndoAction) !void {
+fn doAndRecordAction(buffer: *Buffer, action: Action, combine_action: bool) !void {
+    _ = combine_action; // TODO
+
+    try action.do(buffer);
+
     try buffer.undo_stack.append(buffer.allocator, action);
 
+    // Clear redo stack
     for (buffer.redo_stack.items) |redo_action| {
         redo_action.deinit(buffer.allocator);
     }
-
     buffer.redo_stack.clearRetainingCapacity();
 }
 

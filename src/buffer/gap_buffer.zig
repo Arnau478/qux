@@ -78,17 +78,17 @@ pub fn GapBuffer(T: type) type {
             gap_buffer.gap_start += slice.len;
         }
 
-        /// Delete one item at the current cursor position (forwards)
-        pub fn deleteForwards(gap_buffer: *@This()) void {
-            if (gap_buffer.gap_end < gap_buffer.raw_buffer.len) {
-                gap_buffer.gap_end += 1;
+        /// Delete `count` items at the current cursor position (forwards)
+        pub fn deleteForwards(gap_buffer: *@This(), count: usize) void {
+            if (gap_buffer.gap_end <= gap_buffer.raw_buffer.len - count) {
+                gap_buffer.gap_end += count;
             }
         }
 
-        /// Delete one item before the current cursor position (backwards, like backspace)
-        pub fn deleteBackwards(gap_buffer: *@This()) void {
-            if (gap_buffer.gap_start > 0) {
-                gap_buffer.gap_start -= 1;
+        /// Delete `count` items before the current cursor position (backwards, like backspace)
+        pub fn deleteBackwards(gap_buffer: *@This(), count: usize) void {
+            if (gap_buffer.gap_start >= count) {
+                gap_buffer.gap_start -= count;
             }
         }
 
