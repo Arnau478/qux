@@ -6,6 +6,7 @@ const Tty = @import("../Tty.zig");
 
 const tree_sitter_grammars = struct {
     extern fn tree_sitter_c() callconv(.c) *tree_sitter.Language;
+    extern fn tree_sitter_toml() callconv(.c) *tree_sitter.Language;
     extern fn tree_sitter_zig() callconv(.c) *tree_sitter.Language;
 };
 
@@ -13,11 +14,13 @@ var tree_sitter_query_cache: std.enums.EnumFieldStruct(Filetype, ?*tree_sitter.Q
 
 pub const Filetype = enum {
     c,
+    toml,
     zig,
 
     fn treeSitterName(filetype: Filetype) []const u8 {
         return switch (filetype) {
             .c => "c",
+            .toml => "toml",
             .zig => "zig",
         };
     }
@@ -61,7 +64,11 @@ pub const Filetype = enum {
         const file_name = std.fs.path.basename(file_path);
 
         if (std.mem.endsWith(u8, file_name, ".c") or std.mem.endsWith(u8, file_name, ".h")) {
-            return .zig;
+            return .c;
+        }
+
+        if (std.mem.endsWith(u8, file_name, ".toml")) {
+            return .toml;
         }
 
         if (std.mem.endsWith(u8, file_name, ".zig") or std.mem.endsWith(u8, file_name, ".zon")) {

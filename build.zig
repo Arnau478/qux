@@ -31,11 +31,14 @@ pub fn build(b: *std.Build) void {
     var tree_sitter_queries_source = std.ArrayList(u8).init(b.allocator);
     const tree_sitter_queries_mod = b.createModule(.{});
 
-    inline for (&.{ "c", "zig" }) |language| {
+    inline for (&.{ "c", "toml", "zig" }) |language| {
         const dep = b.dependency(b.fmt("tree-sitter-{s}", .{language}), .{});
         const lib = b.addStaticLibrary(.{ .name = language, .target = target, .optimize = .ReleaseFast });
         lib.linkLibC();
         lib.addCSourceFile(.{ .file = dep.path("src/parser.c") });
+        if (!std.meta.isError(dep.path("src").getPath3(b, null).access("scanner.c", .{}))) {
+            lib.addCSourceFile(.{ .file = dep.path("src/scanner.c") });
+        }
         exe_mod.linkLibrary(lib);
 
         tree_sitter_queries_mod.addAnonymousImport(language, .{ .root_source_file = dep.path("queries/highlights.scm") });
