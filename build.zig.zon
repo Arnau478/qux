@@ -28,6 +28,10 @@
             .url = "git+https://github.com/tree-sitter-grammars/tree-sitter-zig.git#b670c8df85a1568f498aa5c8cae42f51a90473c0",
             .hash = "N-V-__8AAN6NXgCZxLUnqe4620P_FqHrEY8PHTA1-VlOn4yX",
         },
+        .zg = .{
+            .url = "git+https://codeberg.org/atman/zg.git#9427a9e53aaa29ee071f4dcb35b809a699d75aa9",
+            .hash = "zg-0.14.1-oGqU3IQ_tALZIiBN026_NTaPJqU-Upm8P_C7QED2Rzm8",
+        },
     },
     .paths = .{""},
 }

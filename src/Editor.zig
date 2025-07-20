@@ -143,7 +143,7 @@ pub fn run(editor: *Editor) !void {
                     else => {},
                 },
                 .arrow => |arrow| switch (arrow) {
-                    inline else => |a| editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
+                    inline else => |a| try editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
                 },
                 else => {},
             },
@@ -162,7 +162,7 @@ pub fn run(editor: *Editor) !void {
                 },
                 .escape => editor.mode = .normal,
                 .arrow => |arrow| switch (arrow) {
-                    inline else => |a| editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
+                    inline else => |a| try editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
                 },
                 else => {},
             },
@@ -273,7 +273,7 @@ fn runCommand(editor: *Editor, command: []const u8) !void {
     } else {
         if (std.mem.indexOfNone(u8, name, "0123456789") == null) {
             if (iter.peek() != null) return; // TODO
-            editor.currentBuffer().moveCursorToLine((std.fmt.parseInt(usize, name, 10) catch return) - 1);
+            try editor.currentBuffer().moveCursorToLine((std.fmt.parseInt(usize, name, 10) catch return) - 1);
         } else {
             try editor.setNotice(true, "Unknown command: \":{s}\"", .{name});
         }

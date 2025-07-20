@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const zg_dep = b.dependency("zg", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const toml_dep = b.dependency("toml", .{
         .target = target,
         .optimize = optimize,
@@ -24,6 +29,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe_mod.addImport("zg-code_point", zg_dep.module("code_point"));
+    exe_mod.addImport("zg-Graphemes", zg_dep.module("Graphemes"));
     exe_mod.addImport("toml", toml_dep.module("toml"));
     exe_mod.addImport("known_folders", known_folders_dep.module("known-folders"));
     exe_mod.addImport("tree_sitter", tree_sitter_dep.module("tree-sitter"));

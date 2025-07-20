@@ -7,9 +7,10 @@ const Tty = @import("Tty.zig");
 const GapBuffer = @import("buffer/gap_buffer.zig").GapBuffer;
 
 pub const syntax = @import("buffer/syntax.zig");
+pub const unicode = @import("buffer/unicode.zig");
 
 allocator: std.mem.Allocator,
-content: GapBuffer(u8),
+bytes: GapBuffer(u8),
 destination: ?[]const u8,
 dirty: bool,
 read_only: bool,
@@ -52,16 +53,16 @@ pub const Action = union(enum) {
     pub fn do(action: Action, buffer: *Buffer) !void {
         switch (action) {
             .insert => |insert| {
-                buffer.content.moveGapTo(insert.position);
-                try buffer.content.insertSlice(insert.text);
+                buffer.bytes.moveGapTo(insert.position);
+                try buffer.bytes.insertSlice(insert.text);
 
-                try buffer.updateCursorFromPosition(insert.position + insert.text.len);
+                try buffer.updateCursorFromBytePosition(insert.position + insert.text.len);
             },
             .delete => |delete| {
-                buffer.content.moveGapTo(delete.position);
-                buffer.content.deleteForwards(delete.text.len);
+                buffer.bytes.moveGapTo(delete.position);
+                buffer.bytes.deleteForwards(delete.text.len);
 
-                try buffer.updateCursorFromPosition(delete.position);
+                try buffer.updateCursorFromBytePosition(delete.position);
             },
             .composite => |composite| {
                 for (composite) |a| {
@@ -75,16 +76,16 @@ pub const Action = union(enum) {
     pub fn undo(action: Action, buffer: *Buffer) !void {
         switch (action) {
             .insert => |insert| {
-                buffer.content.moveGapTo(insert.position);
-                buffer.content.deleteForwards(insert.text.len);
+                buffer.bytes.moveGapTo(insert.position);
+                buffer.bytes.deleteForwards(insert.text.len);
 
-                try buffer.updateCursorFromPosition(insert.position);
+                try buffer.updateCursorFromBytePosition(insert.position);
             },
             .delete => |delete| {
-                buffer.content.moveGapTo(delete.position);
-                try buffer.content.insertSlice(delete.text);
+                buffer.bytes.moveGapTo(delete.position);
+                try buffer.bytes.insertSlice(delete.text);
 
-                try buffer.updateCursorFromPosition(delete.position + delete.text.len);
+                try buffer.updateCursorFromBytePosition(delete.position + delete.text.len);
             },
             .composite => |composite| {
                 var iter = std.mem.reverseIterator(composite);
@@ -99,7 +100,7 @@ pub const Action = union(enum) {
 pub fn init(allocator: std.mem.Allocator) !Buffer {
     return .{
         .allocator = allocator,
-        .content = try GapBuffer(u8).init(allocator),
+        .bytes = try GapBuffer(u8).init(allocator),
         .destination = null,
         .dirty = false,
         .read_only = false,
@@ -134,23 +135,23 @@ pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer
         buffer.read_only = true;
     }
 
-    const raw_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
-    defer allocator.free(raw_content);
-    var content = raw_content;
-    if (content[content.len - 1] == '\n') {
-        content = content[0 .. content.len - 1];
+    const all_bytes = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(all_bytes);
+    var bytes = all_bytes;
+    if (bytes[bytes.len - 1] == '\n') {
+        bytes = bytes[0 .. bytes.len - 1];
     }
 
-    try buffer.content.insertSlice(content);
+    try buffer.bytes.insertSlice(bytes);
     buffer.dirty = false;
 
-    buffer.filetype = syntax.Filetype.guess(file_path, content);
+    buffer.filetype = syntax.Filetype.guess(file_path, bytes);
 
     return buffer;
 }
 
 pub fn deinit(buffer: *Buffer) void {
-    buffer.content.deinit();
+    buffer.bytes.deinit();
 
     if (buffer.destination) |destination| buffer.allocator.free(destination);
 
@@ -168,13 +169,16 @@ pub fn deinit(buffer: *Buffer) void {
 }
 
 /// Insert a character `char`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
-pub fn insertCharacter(buffer: *Buffer, char: u8, combine_action: bool) !void {
-    try buffer.insertSlice(&.{char}, combine_action);
+pub fn insertCharacter(buffer: *Buffer, char: u21, combine_action: bool) !void {
+    var buf: [4]u8 = undefined;
+    std.debug.assert(buf.len >= std.unicode.utf8CodepointSequenceLength(char) catch 0);
+    const len = std.unicode.utf8Encode(char, &buf) catch @panic("TODO");
+    try buffer.insertBytes(buf[0..len], combine_action);
 }
 
-/// Insert a slice `slice`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
-pub fn insertSlice(buffer: *Buffer, slice: []const u8, combine_action: bool) !void {
-    const position = try buffer.getCursorPosition();
+/// Insert `bytes`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
+pub fn insertBytes(buffer: *Buffer, slice: []const u8, combine_action: bool) !void {
+    const position = try buffer.getCursorBytePosition();
 
     try buffer.doAndRecordAction(.{
         .insert = .{
@@ -186,11 +190,11 @@ pub fn insertSlice(buffer: *Buffer, slice: []const u8, combine_action: bool) !vo
     buffer.dirty = true;
 }
 
-fn deleteForwardsFromPosition(buffer: *Buffer, position: usize, count: usize, combine_action: bool) !void {
-    const text = try buffer.allocator.alloc(u8, count);
+fn deleteBytesForwardsFromBytePosition(buffer: *Buffer, position: usize, byte_count: usize, combine_action: bool) !void {
+    const text = try buffer.allocator.alloc(u8, byte_count);
     errdefer buffer.allocator.free(text);
     for (text, 0..) |*char, i| {
-        char.* = buffer.content.getAt(position + i).?;
+        char.* = buffer.bytes.getAt(position + i).?;
     }
 
     try buffer.doAndRecordAction(.{
@@ -203,154 +207,42 @@ fn deleteForwardsFromPosition(buffer: *Buffer, position: usize, count: usize, co
     buffer.dirty = true;
 }
 
-/// Delete `count` characters forwards. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
+/// Delete `count` graphemes forwards. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
 pub fn deleteForwards(buffer: *Buffer, count: usize, combine_action: bool) !void {
-    const position = try buffer.getCursorPosition();
-    if (position > buffer.content.getLen() - count) return;
+    const byte_position = try buffer.getCursorBytePosition();
+    // TODO: Bound checks
 
-    try buffer.deleteForwardsFromPosition(position, count, combine_action);
+    const bytes = buffer.getAllBytes(buffer.allocator);
+    defer buffer.allocator.free(bytes);
+
+    const graphemes = try unicode.Graphemes.init(buffer.allocator);
+    defer graphemes.deinit(buffer.allocator);
+    var iter = graphemes.iterator(bytes[byte_position..]);
+    var byte_count: usize = 0;
+    for (0..count) |_| {
+        byte_count += iter.next().?.len;
+    }
+
+    try buffer.deleteBytesForwardsFromBytePosition(byte_position, byte_count, combine_action);
 }
 
-/// Delete `count` characters backwards (backspace-like). If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
+/// Delete `count` graphemes backwards (backspace-like). If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
 pub fn deleteBackwards(buffer: *Buffer, count: usize, combine_action: bool) !void {
-    const position = try buffer.getCursorPosition();
-    if (position < count) return;
+    const byte_position = try buffer.getCursorBytePosition();
+    // TODO: Bound checks
 
-    try buffer.deleteForwardsFromPosition(position - count, count, combine_action);
-}
+    const bytes = try buffer.getAllBytes(buffer.allocator);
+    defer buffer.allocator.free(bytes);
 
-pub fn moveCursor(buffer: *Buffer, direction: Editor.Direction) void {
-    switch (direction) {
-        .left => {
-            if (buffer.cursor_col > 0) {
-                buffer.cursor_col -= 1;
-            } else if (buffer.cursor_line > 0) {
-                buffer.cursor_line -= 1;
-                buffer.cursor_col = buffer.getLineLength(buffer.cursor_line);
-            }
-            buffer.preferred_col = buffer.cursor_col;
-        },
-        .right => {
-            if (buffer.cursor_col < buffer.getLineLength(buffer.cursor_line)) {
-                buffer.cursor_col += 1;
-            } else if (buffer.cursor_line < buffer.getLineCount() - 1) {
-                buffer.cursor_line += 1;
-                buffer.cursor_col = 0;
-            }
-            buffer.preferred_col = buffer.cursor_col;
-        },
-        .up => {
-            if (buffer.cursor_line > 0) {
-                buffer.cursor_line -= 1;
-                buffer.cursor_col = @min(buffer.preferred_col, buffer.getLineLength(buffer.cursor_line));
-            } else {
-                // TODO: Go to the beginning
-            }
-        },
-        .down => {
-            if (buffer.cursor_line < buffer.getLineCount() - 1) {
-                buffer.cursor_line += 1;
-                buffer.cursor_col = @min(buffer.preferred_col, buffer.getLineLength(buffer.cursor_line));
-            } else {
-                // TODO: Go to the end
-            }
-        },
-    }
-}
-
-pub fn moveCursorToLine(buffer: *Buffer, line: usize) void {
-    buffer.cursor_line = line;
-    buffer.cursor_col = @min(buffer.preferred_col, buffer.getLineLength(buffer.cursor_line));
-}
-
-pub fn moveCursorToLineStart(buffer: *Buffer) void {
-    buffer.cursor_col = 0;
-    buffer.preferred_col = buffer.cursor_col;
-}
-
-pub fn moveCursorToLineEnd(buffer: *Buffer) void {
-    buffer.cursor_col = buffer.getLineLength(buffer.cursor_line);
-    buffer.preferred_col = buffer.cursor_col;
-}
-
-pub fn getCursorPosition(buffer: *Buffer) !usize {
-    var position: usize = 0;
-    var current_line: usize = 0;
-
-    while (current_line < buffer.cursor_line) {
-        position += buffer.getLineLength(current_line);
-
-        if (current_line < buffer.getLineCount() - 1) {
-            position += 1;
-        }
-
-        current_line += 1;
+    const graphemes = try unicode.Graphemes.init(buffer.allocator);
+    defer graphemes.deinit(buffer.allocator);
+    var iter = graphemes.reverseIterator(bytes[0..byte_position]);
+    var byte_count: usize = 0;
+    for (0..count) |_| {
+        byte_count += iter.prev().?.len;
     }
 
-    position += buffer.cursor_col;
-
-    return position;
-}
-
-pub fn getLineCount(buffer: *Buffer) usize {
-    var count: usize = 1;
-
-    for (0..buffer.content.getLen()) |i| {
-        if (buffer.content.getAt(i) == '\n') {
-            count += 1;
-        }
-    }
-
-    return count;
-}
-
-pub fn getLineStartPos(buffer: *Buffer, line: usize) usize {
-    var current_line: usize = 0;
-    var line_start: usize = 0;
-
-    {
-        var i: usize = 0;
-        while (i < buffer.content.getLen() and current_line < line) : (i += 1) {
-            if (buffer.content.getAt(i) == '\n') {
-                current_line += 1;
-                line_start = i + 1;
-            }
-        }
-    }
-
-    return line_start;
-}
-
-pub fn getLineLength(buffer: *Buffer, line: usize) usize {
-    var len: usize = 0;
-    for (buffer.getLineStartPos(line)..buffer.content.getLen()) |i| {
-        const char = buffer.content.getAt(i) orelse break;
-        if (char == '\n') break;
-        len += 1;
-    }
-
-    return len;
-}
-
-pub fn getLine(buffer: *Buffer, line: usize, allocator: std.mem.Allocator) ![]u8 {
-    var line_content: std.ArrayList(u8) = .init(allocator);
-    for (buffer.getLineStartPos(line)..buffer.content.getLen()) |i| {
-        const char = buffer.content.getAt(i) orelse break;
-        if (char == '\n') break;
-        try line_content.append(char);
-    }
-
-    return line_content.toOwnedSlice();
-}
-
-pub fn getAllContent(buffer: *Buffer, allocator: std.mem.Allocator) ![]u8 {
-    var content = std.ArrayList(u8).init(allocator);
-    for (0..buffer.content.getLen()) |i| {
-        const char = buffer.content.getAt(i) orelse break;
-        try content.append(char);
-    }
-
-    return content.toOwnedSlice();
+    try buffer.deleteBytesForwardsFromBytePosition(byte_position - byte_count, byte_count, combine_action);
 }
 
 pub fn undo(buffer: *Buffer) !void {
@@ -395,18 +287,196 @@ fn doAndRecordAction(buffer: *Buffer, action: Action, combine_action: bool) !voi
     buffer.redo_stack.clearRetainingCapacity();
 }
 
-fn updateCursorFromPosition(buffer: *Buffer, position: usize) !void {
+pub fn moveCursor(buffer: *Buffer, direction: Editor.Direction) !void {
+    switch (direction) {
+        .left => {
+            if (buffer.cursor_col > 0) {
+                buffer.cursor_col -= 1;
+            } else if (buffer.cursor_line > 0) {
+                buffer.cursor_line -= 1;
+                buffer.cursor_col = try buffer.getLineGraphemeLength(buffer.cursor_line);
+            }
+            buffer.preferred_col = buffer.cursor_col;
+        },
+        .right => {
+            if (buffer.cursor_col < try buffer.getLineGraphemeLength(buffer.cursor_line)) {
+                buffer.cursor_col += 1;
+            } else if (buffer.cursor_line < buffer.getLineCount() - 1) {
+                buffer.cursor_line += 1;
+                buffer.cursor_col = 0;
+            }
+            buffer.preferred_col = buffer.cursor_col;
+        },
+        .up => {
+            if (buffer.cursor_line > 0) {
+                buffer.cursor_line -= 1;
+                buffer.cursor_col = @min(buffer.preferred_col, try buffer.getLineGraphemeLength(buffer.cursor_line));
+            } else {
+                // TODO: Go to the beginning
+            }
+        },
+        .down => {
+            if (buffer.cursor_line < buffer.getLineCount() - 1) {
+                buffer.cursor_line += 1;
+                buffer.cursor_col = @min(buffer.preferred_col, try buffer.getLineGraphemeLength(buffer.cursor_line));
+            } else {
+                // TODO: Go to the end
+            }
+        },
+    }
+}
+
+pub fn moveCursorToLine(buffer: *Buffer, line: usize) !void {
+    buffer.cursor_line = line;
+    buffer.cursor_col = @min(buffer.preferred_col, try buffer.getLineGraphemeLength(buffer.cursor_line));
+}
+
+pub fn moveCursorToLineStart(buffer: *Buffer) void {
+    buffer.cursor_col = 0;
+    buffer.preferred_col = buffer.cursor_col;
+}
+
+pub fn moveCursorToLineEnd(buffer: *Buffer) !void {
+    buffer.cursor_col = try buffer.getLineGraphemeLength(buffer.cursor_line);
+    buffer.preferred_col = buffer.cursor_col;
+}
+
+pub fn getCursorBytePosition(buffer: *Buffer) !usize {
+    var position: usize = 0;
+    var current_line: usize = 0;
+
+    // Whole lines
+    while (current_line < buffer.cursor_line) {
+        position += buffer.getLineByteLength(current_line);
+
+        if (current_line < buffer.getLineCount() - 1) {
+            position += 1;
+        }
+
+        current_line += 1;
+    }
+
+    // Current line
+    const line_bytes = try buffer.getLineBytes(buffer.cursor_line, buffer.allocator);
+    defer buffer.allocator.free(line_bytes);
+
+    const graphemes = try unicode.Graphemes.init(buffer.allocator);
+    defer graphemes.deinit(buffer.allocator);
+    var iter = graphemes.iterator(line_bytes);
+    for (0..buffer.cursor_col) |_| {
+        const g = iter.next();
+        position += g.?.len;
+    }
+
+    return position;
+}
+
+pub fn getLineCount(buffer: *Buffer) usize {
+    var count: usize = 1;
+
+    for (0..buffer.bytes.getLen()) |i| {
+        if (buffer.bytes.getAt(i) == '\n') {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+pub fn getLineStartBytePosition(buffer: *Buffer, line: usize) usize {
+    var current_line: usize = 0;
+    var line_start: usize = 0;
+
+    {
+        var i: usize = 0;
+        while (i < buffer.bytes.getLen() and current_line < line) : (i += 1) {
+            if (buffer.bytes.getAt(i) == '\n') {
+                current_line += 1;
+                line_start = i + 1;
+            }
+        }
+    }
+
+    return line_start;
+}
+
+pub fn getLineGraphemeLength(buffer: *Buffer, line: usize) !usize {
+    const graphemes = try unicode.Graphemes.init(buffer.allocator);
+    defer graphemes.deinit(buffer.allocator);
+
+    const bytes = try buffer.getLineBytes(line, buffer.allocator);
+    defer buffer.allocator.free(bytes);
+
+    var iter = graphemes.iterator(bytes);
+
+    var len: usize = 0;
+    while (iter.next()) |_| {
+        len += 1;
+    }
+
+    return len;
+}
+
+pub fn getLineByteLength(buffer: *Buffer, line: usize) usize {
+    var len: usize = 0;
+    for (buffer.getLineStartBytePosition(line)..buffer.bytes.getLen()) |i| {
+        const char = buffer.bytes.getAt(i) orelse break;
+        if (char == '\n') break;
+        len += 1;
+    }
+
+    return len;
+}
+
+pub fn getLineBytes(buffer: *Buffer, line: usize, allocator: std.mem.Allocator) ![]u8 {
+    var line_content: std.ArrayList(u8) = .init(allocator);
+    for (buffer.getLineStartBytePosition(line)..buffer.bytes.getLen()) |i| {
+        const char = buffer.bytes.getAt(i) orelse break;
+        if (char == '\n') break;
+        try line_content.append(char);
+    }
+
+    return line_content.toOwnedSlice();
+}
+
+pub fn getAllBytes(buffer: *Buffer, allocator: std.mem.Allocator) ![]u8 {
+    var content = std.ArrayList(u8).init(allocator);
+    for (0..buffer.bytes.getLen()) |i| {
+        const char = buffer.bytes.getAt(i) orelse break;
+        try content.append(char);
+    }
+
+    return content.toOwnedSlice();
+}
+
+fn updateCursorFromBytePosition(buffer: *Buffer, position: usize) !void {
     var line: usize = 0;
     var col: usize = 0;
 
-    for (0..@min(position, buffer.content.getLen())) |i| {
-        const char = buffer.content.getAt(i) orelse break;
-        if (char == '\n') {
+    const bytes = try buffer.getAllBytes(buffer.allocator);
+    defer buffer.allocator.free(bytes);
+
+    const graphemes = try unicode.Graphemes.init(buffer.allocator);
+    defer graphemes.deinit(buffer.allocator);
+
+    var iter = graphemes.iterator(bytes);
+
+    var current_position: usize = 0;
+
+    while (iter.next()) |g| {
+        std.debug.assert(current_position <= position);
+        if (current_position == position) {
+            break;
+        }
+
+        if (g.len == 1 and bytes[g.offset] == '\n') {
             line += 1;
             col = 0;
         } else {
             col += 1;
         }
+
+        current_position += g.len;
     }
 
     buffer.cursor_line = line;
@@ -423,7 +493,7 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
     var arena = std.heap.ArenaAllocator.init(buffer.allocator);
     defer arena.deinit();
 
-    const content = try buffer.getAllContent(arena.allocator());
+    const bytes = try buffer.getAllBytes(arena.allocator());
 
     // Syntax highlighting
     if (buffer.tree_sitter_filetype != buffer.filetype) {
@@ -435,7 +505,7 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
         }
     }
 
-    buffer.tree_sitter_tree = buffer.tree_sitter_parser.parseString(content, null); // TODO: Incremental parsing
+    buffer.tree_sitter_tree = buffer.tree_sitter_parser.parseString(bytes, null); // TODO: Incremental parsing
 
     const tree_sitter_query_cursor = cursor: {
         if (buffer.filetype) |filetype| {
@@ -467,7 +537,7 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
         var display_offset: usize = 0;
         var line_number: usize = buffer.scroll;
         while (display_offset < viewport.height) : (line_number += 1) {
-            display_offset += std.math.divCeil(usize, @max(buffer.getLineLength(line_number), 1), viewport.width - number_col_size) catch @panic("TODO");
+            display_offset += std.math.divCeil(usize, @max(try buffer.getLineGraphemeLength(line_number), 1), viewport.width - number_col_size) catch @panic("TODO");
         }
         if (display_offset > viewport.height) {
             line_number -= 1;
@@ -510,21 +580,21 @@ pub fn render(buffer: *Buffer, tty: *Tty, viewport: Editor.Viewport, theme: Edit
 fn renderLine(buffer: *Buffer, arena: *std.heap.ArenaAllocator, tty: *Tty, viewport: Editor.Viewport, theme: Editor.Theme, line_number: usize, line_display_offset: usize, tree_sitter_captures: []const tree_sitter.Query.Capture, number_col_size: usize, line_height_limit: usize) !usize {
     std.debug.assert(line_height_limit >= 1);
 
-    const line_start_pos = buffer.getLineStartPos(line_number);
-    const line_content = try buffer.getLine(line_number, arena.allocator());
+    const line_start_byte_position = buffer.getLineStartBytePosition(line_number);
+    const line_bytes = try buffer.getLineBytes(line_number, arena.allocator());
 
     // Syntax highlighting
-    const line_highlight_types = try arena.allocator().alloc(?syntax.HighlightType, line_content.len);
-    @memset(line_highlight_types, null);
+    const line_highlight_byte_types = try arena.allocator().alloc(?syntax.HighlightType, line_bytes.len);
+    @memset(line_highlight_byte_types, null);
     for (tree_sitter_captures) |capture| {
         const name = buffer.filetype.?.treeSitterQuery().captureNameForId(capture.index).?;
-        if (capture.node.endByte() <= line_start_pos) continue;
-        if (capture.node.startByte() >= line_start_pos + line_content.len) continue;
+        if (capture.node.endByte() <= line_start_byte_position) continue;
+        if (capture.node.startByte() >= line_start_byte_position + line_bytes.len) continue;
 
-        const start = @max(capture.node.startByte(), line_start_pos);
-        const end = @min(capture.node.endByte(), line_start_pos + line_content.len);
+        const start = @max(capture.node.startByte(), line_start_byte_position);
+        const end = @min(capture.node.endByte(), line_start_byte_position + line_bytes.len);
 
-        for (line_highlight_types[start - line_start_pos .. end - line_start_pos]) |*t| {
+        for (line_highlight_byte_types[start - line_start_byte_position .. end - line_start_byte_position]) |*t| {
             if (syntax.HighlightType.fromTreeSitterCapture(name)) |highlight_type| {
                 if (t.* == null or t.*.?.compareSpecificity(highlight_type) == .lt) {
                     t.* = syntax.HighlightType.fromTreeSitterCapture(name);
@@ -537,10 +607,20 @@ fn renderLine(buffer: *Buffer, arena: *std.heap.ArenaAllocator, tty: *Tty, viewp
     }
 
     // Render the line
+    const graphemes = try unicode.Graphemes.init(arena.allocator());
+
+    var grapheme_iter = graphemes.iterator(line_bytes);
+    var line_graphemes_list: std.ArrayListUnmanaged(unicode.Graphemes.Grapheme) = .{};
+    while (grapheme_iter.next()) |g| {
+        try line_graphemes_list.append(arena.allocator(), g);
+    }
+    const line_graphemes = try line_graphemes_list.toOwnedSlice(arena.allocator());
+
     var visual_line_idx: usize = 0;
-    var window_iter = std.mem.window(u8, line_content, viewport.width - number_col_size, viewport.width - number_col_size);
-    var highlight_types_window_iter = std.mem.window(?syntax.HighlightType, line_highlight_types, viewport.width - number_col_size, viewport.width - number_col_size);
-    while (window_iter.next()) |visual_line| : (visual_line_idx += 1) {
+    var visual_line_iter = std.mem.window(unicode.Graphemes.Grapheme, line_graphemes, viewport.width - number_col_size, viewport.width - number_col_size);
+    while (visual_line_iter.next()) |visual_line| : (visual_line_idx += 1) {
+        std.debug.assert(visual_line.len >= 0);
+
         std.debug.assert(visual_line_idx <= line_height_limit);
         if (visual_line_idx == line_height_limit) {
             const continue_indicator = ">";
@@ -553,7 +633,6 @@ fn renderLine(buffer: *Buffer, arena: *std.heap.ArenaAllocator, tty: *Tty, viewp
             break;
         }
 
-        const visual_line_highlight_types = highlight_types_window_iter.next().?;
         const display_offset = line_display_offset + visual_line_idx;
 
         try tty.moveCursor(.{ .x = viewport.x, .y = viewport.y + display_offset });
@@ -573,11 +652,13 @@ fn renderLine(buffer: *Buffer, arena: *std.heap.ArenaAllocator, tty: *Tty, viewp
             try tty.writer().writeByte(' ');
         }
 
-        for (visual_line, visual_line_highlight_types) |char, highlight_type| {
+        for (visual_line, 0..) |grapheme, col| {
+            const highlight_type = line_highlight_byte_types[grapheme.offset];
             var code_attributes: Tty.Attributes = if (highlight_type) |t| t.getAttributes(theme) else .{};
             if (code_attributes.bg == null) code_attributes.bg = theme.background;
+            try tty.moveCursor(.{ .x = viewport.x + number_col_size + col, .y = viewport.y + display_offset });
             try tty.setAttributes(code_attributes);
-            try tty.writer().writeByte(char);
+            try tty.writer().writeAll(grapheme.bytes(line_bytes));
         }
 
         try tty.setAttributes(.{ .bg = theme.background });
@@ -598,10 +679,10 @@ pub fn save(buffer: *Buffer) !bool {
         const file = std.fs.cwd().createFile(destination, .{}) catch return error.FileOpenError;
         defer file.close();
 
-        const content = try buffer.getAllContent(buffer.allocator);
-        defer buffer.allocator.free(content);
+        const bytes = try buffer.getAllBytes(buffer.allocator);
+        defer buffer.allocator.free(bytes);
 
-        file.writeAll(content) catch return error.FileWriteError;
+        file.writeAll(bytes) catch return error.FileWriteError;
         file.writer().writeByte('\n') catch return error.FileWriteError;
 
         buffer.dirty = false;
