@@ -312,7 +312,8 @@ pub fn moveCursor(buffer: *Buffer, direction: Editor.Direction) !void {
                 buffer.cursor_line -= 1;
                 buffer.cursor_col = @min(buffer.preferred_col, try buffer.getLineGraphemeLength(buffer.cursor_line));
             } else {
-                // TODO: Go to the beginning
+                buffer.cursor_col = 0;
+                buffer.preferred_col = buffer.cursor_col;
             }
         },
         .down => {
@@ -320,7 +321,8 @@ pub fn moveCursor(buffer: *Buffer, direction: Editor.Direction) !void {
                 buffer.cursor_line += 1;
                 buffer.cursor_col = @min(buffer.preferred_col, try buffer.getLineGraphemeLength(buffer.cursor_line));
             } else {
-                // TODO: Go to the end
+                buffer.cursor_col = try buffer.getLineGraphemeLength(buffer.cursor_line);
+                buffer.preferred_col = buffer.cursor_col;
             }
         },
     }
