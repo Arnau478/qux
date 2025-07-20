@@ -134,14 +134,14 @@ pub fn run(editor: *Editor) !void {
         editor.unsetNotice();
         switch (editor.mode) {
             .normal => switch (input) {
-                .printable => |printable| switch (printable) {
+                .printable => |printable| if (printable.len == 1) switch (printable[0]) {
                     0...31 => unreachable,
                     'i' => editor.mode = .{ .insert = .{} },
                     ':' => editor.mode = .{ .command = .{} },
                     'u' => try editor.currentBuffer().undo(),
                     'r' => try editor.currentBuffer().redo(),
                     else => {},
-                },
+                } else {},
                 .arrow => |arrow| switch (arrow) {
                     inline else => |a| try editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
                 },
@@ -149,11 +149,11 @@ pub fn run(editor: *Editor) !void {
             },
             .insert => |*insert| switch (input) {
                 .printable => |printable| {
-                    try editor.currentBuffer().insertCharacter(printable, insert.combine_edit_actions);
+                    try editor.currentBuffer().insertBytes(printable, insert.combine_edit_actions);
                     insert.combine_edit_actions = true;
                 },
                 .@"return" => {
-                    try editor.currentBuffer().insertCharacter('\n', insert.combine_edit_actions);
+                    try editor.currentBuffer().insertBytes("\n", insert.combine_edit_actions);
                     insert.combine_edit_actions = true;
                 },
                 .backspace => {
@@ -167,7 +167,7 @@ pub fn run(editor: *Editor) !void {
                 else => {},
             },
             .command => |*command| switch (input) {
-                .printable => |printable| try command.append(editor.allocator, printable),
+                .printable => |printable| try command.appendSlice(editor.allocator, printable),
                 .backspace => _ = command.pop(),
                 .escape, .@"return" => {
                     if (input == .@"return") try runCommand(editor, command.items);

@@ -1,7 +1,6 @@
 const PosixTty = @This();
 
 const std = @import("std");
-const Input = @import("input.zig").Input;
 const Tty = @import("../Tty.zig");
 
 fd: std.posix.fd_t,
@@ -49,10 +48,11 @@ pub fn reader(tty: PosixTty) Reader {
     return .{ .context = tty };
 }
 
-pub fn readInput(tty: PosixTty) !Input {
+var read_input_buf: [4]u8 = undefined;
+
+pub fn readInput(tty: PosixTty) !Tty.Input {
     const byte = try tty.reader().readByte();
     switch (byte) {
-        32...126 => return .{ .printable = @intCast(byte) },
         '\x1b' => {
             var termios = try std.posix.tcgetattr(tty.fd);
             termios.cc[@intFromEnum(std.posix.V.TIME)] = 1;
@@ -84,7 +84,15 @@ pub fn readInput(tty: PosixTty) !Input {
         },
         '\n', '\r' => return .@"return",
         8, 127 => return .backspace,
-        else => return .{ .unknown = byte },
+        else => {
+            const len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+            std.debug.assert(len <= read_input_buf.len);
+            read_input_buf[0] = byte;
+            for (1..len) |i| {
+                read_input_buf[i] = try tty.reader().readByte();
+            }
+            return .{ .printable = read_input_buf[0..len] };
+        },
     }
 }
 

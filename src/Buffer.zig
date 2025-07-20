@@ -168,14 +168,6 @@ pub fn deinit(buffer: *Buffer) void {
     buffer.tree_sitter_parser.destroy();
 }
 
-/// Insert a character `char`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
-pub fn insertCharacter(buffer: *Buffer, char: u21, combine_action: bool) !void {
-    var buf: [4]u8 = undefined;
-    std.debug.assert(buf.len >= std.unicode.utf8CodepointSequenceLength(char) catch 0);
-    const len = std.unicode.utf8Encode(char, &buf) catch @panic("TODO");
-    try buffer.insertBytes(buf[0..len], combine_action);
-}
-
 /// Insert `bytes`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
 pub fn insertBytes(buffer: *Buffer, slice: []const u8, combine_action: bool) !void {
     const position = try buffer.getCursorBytePosition();

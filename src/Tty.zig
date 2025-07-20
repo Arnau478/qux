@@ -3,8 +3,6 @@ const Tty = @This();
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const Input = @import("tty/input.zig").Input;
-
 impl: Impl,
 
 const Impl = switch (builtin.os.tag) {
@@ -23,6 +21,22 @@ const Impl = switch (builtin.os.tag) {
     .serenity,
     => @import("tty/PosixTty.zig"),
     else => @compileError("Unsupported OS: " ++ @tagName(builtin.os.tag)),
+};
+
+pub const Input = union(enum) {
+    printable: []const u8,
+    escape,
+    @"return",
+    backspace,
+    arrow: Arrow,
+    unknown: u8,
+
+    pub const Arrow = enum {
+        up,
+        down,
+        left,
+        right,
+    };
 };
 
 pub const Size = struct {
