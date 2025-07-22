@@ -656,6 +656,7 @@ fn renderLine(buffer: *Buffer, arena: *std.heap.ArenaAllocator, tty: *Tty, viewp
         }
 
         try tty.setAttributes(.{ .bg = theme.background });
+        try tty.moveCursor(.{ .x = viewport.x + number_col_size + visual_line.len, .y = viewport.y + display_offset });
         try tty.writer().writeByteNTimes(' ', viewport.width - number_col_size - visual_line.len);
     }
 
