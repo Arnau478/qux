@@ -53,8 +53,9 @@ current_buffer_idx: usize,
 notice: ?[]const u8,
 notice_is_error: bool,
 theme: Theme,
+config: *const Config,
 
-pub fn init(allocator: std.mem.Allocator, config: Config.Editor, tty: *Tty, initial_buffer_destinations: []const []const u8) !Editor {
+pub fn init(allocator: std.mem.Allocator, config: *const Config, tty: *Tty, initial_buffer_destinations: []const []const u8) !Editor {
     var editor: Editor = .{
         .allocator = allocator,
         .tty = tty,
@@ -64,13 +65,14 @@ pub fn init(allocator: std.mem.Allocator, config: Config.Editor, tty: *Tty, init
         .notice = null,
         .notice_is_error = false,
         .theme = Theme.byName(config.theme) orelse .default_builtin,
+        .config = config,
     };
 
     if (initial_buffer_destinations.len == 0) {
-        try editor.buffers.append(allocator, try .init(allocator));
+        try editor.buffers.append(allocator, try .init(allocator, config));
     } else {
         for (initial_buffer_destinations) |dest| {
-            try editor.buffers.append(allocator, try .initFromFile(allocator, dest));
+            try editor.buffers.append(allocator, try .initFromFile(allocator, config, dest));
         }
     }
 

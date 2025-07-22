@@ -27,7 +27,7 @@ pub fn main() !void {
     var tty: Tty = try .init();
     defer tty.deinit();
 
-    var editor: Editor = try .init(allocator, config.editor, &tty, args[1..]);
+    var editor: Editor = try .init(allocator, &config, &tty, args[1..]);
     defer editor.deinit();
 
     try editor.run();

@@ -1,5 +1,2 @@
-editor: Editor = .{},
-
-pub const Editor = struct {
-    theme: []const u8 = "kanagawa",
-};
+theme: []const u8 = "kanagawa",
+indent: usize = 4,

@@ -5,6 +5,7 @@ const tree_sitter = @import("tree_sitter");
 const Editor = @import("Editor.zig");
 const Tty = @import("Tty.zig");
 const GapBuffer = @import("buffer/gap_buffer.zig").GapBuffer;
+const Config = @import("Config.zig");
 
 pub const syntax = @import("buffer/syntax.zig");
 pub const unicode = @import("buffer/unicode.zig");
@@ -24,6 +25,7 @@ filetype: ?syntax.Filetype,
 tree_sitter_filetype: ?syntax.Filetype,
 tree_sitter_parser: *tree_sitter.Parser,
 tree_sitter_tree: ?*tree_sitter.Tree,
+config: *const Config,
 
 pub const Action = union(enum) {
     insert: struct {
@@ -97,7 +99,7 @@ pub const Action = union(enum) {
     }
 };
 
-pub fn init(allocator: std.mem.Allocator) !Buffer {
+pub fn init(allocator: std.mem.Allocator, config: *const Config) !Buffer {
     return .{
         .allocator = allocator,
         .bytes = try GapBuffer(u8).init(allocator),
@@ -114,11 +116,12 @@ pub fn init(allocator: std.mem.Allocator) !Buffer {
         .tree_sitter_filetype = null,
         .tree_sitter_parser = tree_sitter.Parser.create(),
         .tree_sitter_tree = null,
+        .config = config,
     };
 }
 
-pub fn initFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Buffer {
-    var buffer = try Buffer.init(allocator);
+pub fn initFromFile(allocator: std.mem.Allocator, config: *const Config, file_path: []const u8) !Buffer {
+    var buffer = try Buffer.init(allocator, config);
     buffer.destination = try allocator.dupe(u8, file_path);
 
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
@@ -169,13 +172,46 @@ pub fn deinit(buffer: *Buffer) void {
 }
 
 /// Insert `bytes`. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
-pub fn insertBytes(buffer: *Buffer, slice: []const u8, combine_action: bool) !void {
+pub fn insertBytes(buffer: *Buffer, bytes: []const u8, combine_action: bool) !void {
     const position = try buffer.getCursorBytePosition();
+
+    var text = try std.ArrayList(u8).initCapacity(buffer.allocator, bytes.len);
+    errdefer text.deinit();
+
+    const graphemes = try unicode.Graphemes.init(buffer.allocator);
+    defer graphemes.deinit(buffer.allocator);
+    var iter = graphemes.iterator(bytes);
+
+    var current_displacement: usize = buffer.cursor_col;
+
+    while (iter.next()) |grapheme| {
+        if (std.mem.eql(u8, grapheme.bytes(bytes), "\t")) {
+            const rest = buffer.config.indent - (current_displacement % buffer.config.indent);
+            try text.appendNTimes(' ', rest);
+            current_displacement += rest;
+        } else if (std.mem.eql(u8, grapheme.bytes(bytes), "\n")) {
+            try text.append('\n');
+            current_displacement = 0;
+        } else {
+            try text.appendSlice(grapheme.bytes(bytes));
+            current_displacement += 1;
+        }
+    }
+
+    if (std.mem.eql(u8, bytes, "\n")) {
+        const last_line_bytes = try buffer.getLineBytes(buffer.cursor_line, buffer.allocator);
+        defer buffer.allocator.free(last_line_bytes);
+
+        const last_indent_spaces = std.mem.indexOfNone(u8, last_line_bytes, &.{' '}) orelse last_line_bytes.len;
+        const last_indent = last_indent_spaces / buffer.config.indent;
+
+        try text.appendNTimes(' ', last_indent * buffer.config.indent);
+    }
 
     try buffer.doAndRecordAction(.{
         .insert = .{
             .position = position,
-            .text = try buffer.allocator.dupe(u8, slice),
+            .text = try text.toOwnedSlice(),
         },
     }, combine_action);
 
@@ -222,6 +258,16 @@ pub fn deleteForwards(buffer: *Buffer, count: usize, combine_action: bool) !void
 pub fn deleteBackwards(buffer: *Buffer, count: usize, combine_action: bool) !void {
     const byte_position = try buffer.getCursorBytePosition();
     // TODO: Bound checks
+
+    const line_bytes = try buffer.getLineBytes(buffer.cursor_line, buffer.allocator);
+    defer buffer.allocator.free(line_bytes);
+
+    if (std.mem.indexOfNone(u8, line_bytes[0..buffer.cursor_col], &.{' '}) == null and
+        buffer.cursor_col % buffer.config.indent == 0 and
+        count == 1)
+    {
+        return try buffer.deleteBackwards(buffer.config.indent, combine_action);
+    }
 
     const bytes = try buffer.getAllBytes(buffer.allocator);
     defer buffer.allocator.free(bytes);
