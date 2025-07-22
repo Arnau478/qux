@@ -69,6 +69,8 @@ pub fn readInput(tty: PosixTty) !Tty.Input {
             const escape = escape_buffer[0..escape_read_len];
             if (escape.len == 0) {
                 return .escape;
+            } else if (std.mem.eql(u8, escape, "[3~")) {
+                return .delete;
             } else if (std.mem.eql(u8, escape, "[A")) {
                 return .{ .arrow = .up };
             } else if (std.mem.eql(u8, escape, "[B")) {

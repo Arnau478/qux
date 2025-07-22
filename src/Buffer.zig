@@ -240,7 +240,7 @@ pub fn deleteForwards(buffer: *Buffer, count: usize, combine_action: bool) !void
     const byte_position = try buffer.getCursorBytePosition();
     // TODO: Bound checks
 
-    const bytes = buffer.getAllBytes(buffer.allocator);
+    const bytes = try buffer.getAllBytes(buffer.allocator);
     defer buffer.allocator.free(bytes);
 
     const graphemes = try unicode.Graphemes.init(buffer.allocator);

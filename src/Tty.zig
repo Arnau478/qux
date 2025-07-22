@@ -28,6 +28,7 @@ pub const Input = union(enum) {
     escape,
     @"return",
     backspace,
+    delete,
     arrow: Arrow,
     unknown: u8,
 

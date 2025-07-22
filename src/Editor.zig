@@ -162,6 +162,10 @@ pub fn run(editor: *Editor) !void {
                     try editor.currentBuffer().deleteBackwards(1, insert.combine_edit_actions);
                     insert.combine_edit_actions = true;
                 },
+                .delete => {
+                    try editor.currentBuffer().deleteForwards(1, insert.combine_edit_actions);
+                    insert.combine_edit_actions = true;
+                },
                 .escape => editor.mode = .normal,
                 .arrow => |arrow| switch (arrow) {
                     inline else => |a| try editor.currentBuffer().moveCursor(@field(Direction, @tagName(a))),
