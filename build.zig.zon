@@ -4,6 +4,14 @@
     .fingerprint = 0xa6e4afc887988201,
     .minimum_zig_version = "0.14.0",
     .dependencies = .{
+        .pennant = .{
+            .url = "git+https://github.com/Arnau478/pennant#17170d914d69662e714fcef242c579b630e04601",
+            .hash = "pennant-0.1.0-MwI8MAFIAACqvsJpHZAds8xeIWvUJVh1BlBFygMrDfgb",
+        },
+        .zg = .{
+            .url = "git+https://codeberg.org/atman/zg.git#9427a9e53aaa29ee071f4dcb35b809a699d75aa9",
+            .hash = "zg-0.14.1-oGqU3IQ_tALZIiBN026_NTaPJqU-Upm8P_C7QED2Rzm8",
+        },
         .toml = .{
             .url = "git+https://github.com/sam701/zig-toml.git#d40d86763e5051203432bae4c92503995f643883",
             .hash = "toml-0.3.0-bV14BWR6AQDG5UJ5q2jo4eCHIsRqh12SbMVvjHP1HNQT",
@@ -27,10 +35,6 @@
         .@"tree-sitter-zig" = .{
             .url = "git+https://github.com/tree-sitter-grammars/tree-sitter-zig.git#b670c8df85a1568f498aa5c8cae42f51a90473c0",
             .hash = "N-V-__8AAN6NXgCZxLUnqe4620P_FqHrEY8PHTA1-VlOn4yX",
-        },
-        .zg = .{
-            .url = "git+https://codeberg.org/atman/zg.git#9427a9e53aaa29ee071f4dcb35b809a699d75aa9",
-            .hash = "zg-0.14.1-oGqU3IQ_tALZIiBN026_NTaPJqU-Upm8P_C7QED2Rzm8",
         },
     },
     .paths = .{""},
