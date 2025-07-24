@@ -238,7 +238,6 @@ fn deleteBytesForwardsFromBytePosition(buffer: *Buffer, position: usize, byte_co
 /// Delete `count` graphemes forwards. If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
 pub fn deleteForwards(buffer: *Buffer, count: usize, combine_action: bool) !void {
     const byte_position = try buffer.getCursorBytePosition();
-    // TODO: Bound checks
 
     const bytes = try buffer.getAllBytes(buffer.allocator);
     defer buffer.allocator.free(bytes);
@@ -248,7 +247,7 @@ pub fn deleteForwards(buffer: *Buffer, count: usize, combine_action: bool) !void
     var iter = graphemes.iterator(bytes[byte_position..]);
     var byte_count: usize = 0;
     for (0..count) |_| {
-        byte_count += iter.next().?.len;
+        byte_count += (iter.next() orelse return).len;
     }
 
     try buffer.deleteBytesForwardsFromBytePosition(byte_position, byte_count, combine_action);
@@ -257,7 +256,6 @@ pub fn deleteForwards(buffer: *Buffer, count: usize, combine_action: bool) !void
 /// Delete `count` graphemes backwards (backspace-like). If `combine_action` is `true`, then try to combine it with the latest action in the undo stack.
 pub fn deleteBackwards(buffer: *Buffer, count: usize, combine_action: bool) !void {
     const byte_position = try buffer.getCursorBytePosition();
-    // TODO: Bound checks
 
     const line_bytes = try buffer.getLineBytes(buffer.cursor_line, buffer.allocator);
     defer buffer.allocator.free(line_bytes);
@@ -277,7 +275,7 @@ pub fn deleteBackwards(buffer: *Buffer, count: usize, combine_action: bool) !voi
     var iter = graphemes.reverseIterator(bytes[0..byte_position]);
     var byte_count: usize = 0;
     for (0..count) |_| {
-        byte_count += iter.prev().?.len;
+        byte_count += (iter.prev() orelse return).len;
     }
 
     try buffer.deleteBytesForwardsFromBytePosition(byte_position - byte_count, byte_count, combine_action);
