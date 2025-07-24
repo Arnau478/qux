@@ -640,7 +640,7 @@ fn renderLine(buffer: *Buffer, arena: *std.heap.ArenaAllocator, tty: *Tty, viewp
                     t.* = syntax.HighlightType.fromTreeSitterCapture(name);
                 }
             } else {
-                std.log.warn("Unknown tree sitter capture: @{s}", .{name});
+                std.log.debug("Unknown tree sitter capture: @{s}", .{name});
                 break;
             }
         }

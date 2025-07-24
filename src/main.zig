@@ -8,11 +8,15 @@ const Config = @import("Config.zig");
 
 pub const std_options: std.Options = .{
     .logFn = log,
+    .log_level = .debug,
 };
 
+var log_verbose: bool = false;
 var log_file: ?std.fs.File = null;
 
 pub fn log(comptime level: std.log.Level, comptime _: @Type(.enum_literal), comptime fmt: []const u8, args: anytype) void {
+    if (!log_verbose and level == .debug) return;
+
     if (log_file) |file| {
         file.writer().print(level.asText() ++ ": " ++ fmt ++ "\n", args) catch {};
     }
@@ -21,6 +25,8 @@ pub fn log(comptime level: std.log.Level, comptime _: @Type(.enum_literal), comp
 const Options = struct {
     help: bool = false,
     version: bool = false,
+    verbose: bool = false,
+    log: ?[]const u8 = null,
 };
 
 pub fn main() !void {
@@ -40,7 +46,8 @@ pub fn main() !void {
             } else if (args.options.version) {
                 try std.io.getStdOut().writeAll("TODO\n");
             } else {
-                log_file = try getLogFile(allocator);
+                log_verbose = args.options.verbose;
+                log_file = try getLogFile(allocator, args.options.log);
 
                 var config_parser = toml.Parser(Config).init(allocator);
                 defer config_parser.deinit();
@@ -68,11 +75,15 @@ pub fn main() !void {
     }
 }
 
-pub fn getLogFile(allocator: std.mem.Allocator) !?std.fs.File {
-    if (try known_folders.open(allocator, .cache, .{})) |cache_dir| {
-        cache_dir.makeDir("qux") catch {};
-        return cache_dir.createFile("qux/qux.log", .{}) catch null;
-    } else return null;
+pub fn getLogFile(allocator: std.mem.Allocator, file_path_override: ?[]const u8) !?std.fs.File {
+    if (file_path_override) |path| {
+        return std.fs.cwd().createFile(path, .{}) catch null;
+    } else {
+        if (try known_folders.open(allocator, .cache, .{})) |cache_dir| {
+            cache_dir.makeDir("qux") catch {};
+            return cache_dir.createFile("qux/qux.log", .{}) catch null;
+        } else return null;
+    }
 }
 
 pub fn getConfig(allocator: std.mem.Allocator) !?[]const u8 {
